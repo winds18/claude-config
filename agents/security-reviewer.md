@@ -21,5 +21,7 @@ color: red
 
 ## 输出
 
-按严重度（Critical/High/Medium/Low）排序，每条给出：文件:行、攻击前提与路径、影响、修复方向。
+按严重度（critical/high/medium/low）排序，每条给出：文件:行、攻击前提与路径、影响、修复方向。
 区分"已确认"与"需验证"。无发现时说明检查范围与未覆盖面。不夸大风险，不输出通用安全清单。
+
+调用方要求结构化输出（schema）时以 schema 为准，严重度映射为 critical/high/medium/low。

@@ -26,3 +26,5 @@ color: purple
 
 按严重度排序，每条：`严重度 | 文件:行 | 一句话问题 | 触发条件 → 结果 | 修复方向`。
 没有发现时说明复核范围与未覆盖的部分。
+
+调用方要求结构化输出（schema）时以 schema 为准；严重度用 critical/high/medium/low。

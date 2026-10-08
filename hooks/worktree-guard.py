@@ -32,8 +32,10 @@ import os
 import re
 import subprocess
 import sys
+from urllib.parse import quote
 
 OWNER_FILE = "dev-spec-owner.json"
+OWNERS_DIR = "dev-spec-owners"
 DECLARE_NAME = ".dev-spec-owner.json"
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
@@ -43,7 +45,7 @@ def git(cwd: str, *args: str) -> str | None:
         p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return None
-    return p.stdout.strip() if p.returncode == 0 else None
+    return p.stdout.rstrip("\n") if p.returncode == 0 else None  # keep leading spaces: porcelain status columns
 
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -88,6 +90,15 @@ class Worktree:
         self.linked = bool(self.top and git_dir and common
                            and os.path.realpath(git_dir) != os.path.realpath(common))
         self.owner_path = os.path.join(git_dir, OWNER_FILE) if git_dir else ""
+        self.common = common or ""
+        self.branch = git(cwd, "symbolic-ref", "-q", "--short", "HEAD") or ""
+
+    def durable_path(self) -> str:
+        """Copy keyed by branch in the shared git dir, so integrate.py can still check scope
+        after the worktree is removed or pruned."""
+        if not (self.common and self.branch):
+            return ""
+        return os.path.join(self.common, OWNERS_DIR, quote(self.branch, safe="") + ".json")
 
     def owner(self) -> dict | None:
         try:
@@ -126,12 +137,29 @@ def record_declaration(content: object, wt: "Worktree") -> None:
             or not globs_ok(data.get("forbidden", [])) or not isinstance(data.get("base", ""), str):
         return deny('归属声明格式错误：需要 {"base": "<SHA>", "owned": [非空 glob 列表], "forbidden": [glob 列表]}')
     data = {"base": data.get("base", ""), "owned": data["owned"], "forbidden": data.get("forbidden", [])}
+    base = data["base"]
+    if base:
+        # Covers dispatches that bypass the main-session PreToolUse(Agent) check, e.g. workflow agent():
+        # a worktree that does not contain the contract checkpoint must not start work.
+        if git(wt.top, "cat-file", "-e", f"{base}^{{commit}}") is None:
+            return deny(f"基线 {base} 在本仓库中不存在：契约检查点可能未提交。不要开工，按 blocked 回报负责人。")
+        if subprocess.run(["git", "merge-base", "--is-ancestor", base, "HEAD"], cwd=wt.top,
+                          capture_output=True).returncode != 0:
+            return deny(f"worktree 起点不包含基线 {base}（检查点未提交到派发分支，或 worktree.baseRef 不是 head）。"
+                        "不要开工，按 blocked 回报负责人。")
     current = wt.owner()
     if current is not None and current != data:
         return deny(f"归属已锁定为 owned={current.get('owned')}, forbidden={current.get('forbidden')}，"
                     "不能自行修改；需要扩大范围时停止并回报负责人。")
     with open(wt.owner_path, "w") as f:
         json.dump(data, f, ensure_ascii=False)
+    durable = wt.durable_path()
+    if durable:
+        # declared_at lets integrate.py reject a stale copy inherited by a later, unrelated same-named branch
+        os.makedirs(os.path.dirname(durable), exist_ok=True)
+        with open(durable, "w") as f:
+            json.dump({**data, "declared_at": git(wt.top, "rev-parse", "HEAD") or "", "worktree": wt.top},
+                      f, ensure_ascii=False)
     deny(f"✓ 归属已记录（存于 worktree 私有 git 目录，不进入工作区或提交）：owned={data['owned']}, "
          f"forbidden={data['forbidden']}。这是预期结果，无需重试，也不要用其他方式写这个文件；继续下一步。")
 
@@ -184,7 +212,7 @@ def on_stop(event: dict, wt: Worktree) -> None:
         return
     problems = []
     status = git(wt.top, "status", "--porcelain", "--untracked-files=normal") or ""
-    dirty = [l[3:].split(" -> ")[-1] for l in status.splitlines() if l]
+    dirty = [p for l in status.splitlines() if l for p in l[3:].split(" -> ")]  # renames: both sides
     if dirty:
         problems.append(f"有 {len(dirty)} 个未提交改动（例：{dirty[0]}）：按 Conventional Commits 提交到当前分支")
     owner = wt.owner()
@@ -196,7 +224,7 @@ def on_stop(event: dict, wt: Worktree) -> None:
         if isinstance(start, str) and start and git(wt.top, "cat-file", "-e", f"{start}^{{commit}}") is not None:
             if git(wt.top, "rev-parse", "HEAD") == git(wt.top, "rev-parse", start):
                 problems.append("自基线以来没有任何提交；若确实无需改动，在回报中说明原因")
-            changed += (git(wt.top, "diff", "--name-only", f"{start}..HEAD") or "").splitlines()
+            changed += (git(wt.top, "diff", "--name-only", "--no-renames", f"{start}..HEAD") or "").splitlines()
         elif start:
             problems.append(f"基线 {start} 不存在，无法核对改动范围")
         bad = sorted({r for r in changed if r and out_of_scope(r, owner)})

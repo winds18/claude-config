@@ -65,6 +65,10 @@ def main() -> int:
         (repo / "src/contract.py").write_text("X = 1\n")
         check("dispatch: dirty but no isolation", decision(hook("policy-guard.py", no_iso, env)), None)
         check("dispatch: uncommitted contract", decision(hook("policy-guard.py", agent(), env)), "ask")
+        (repo / "src/a.py").write_text("a = 99\n")           # tracked + modified: porcelain line starts with a space
+        reason = hook("policy-guard.py", agent(), env)["hookSpecificOutput"]["permissionDecisionReason"]
+        check("dispatch: reports exact modified path", "src/a.py" in reason and "rc/a.py）" not in reason.replace("src/a.py", ""), True)
+        g(repo, "checkout", "--", "src/a.py")
         g(repo, "add", ".")
         g(repo, "commit", "-qm", "contract")
         checkpoint = g(repo, "rev-parse", "HEAD")
@@ -101,6 +105,8 @@ def main() -> int:
         check("declare: recorded", "归属已记录" in out["hookSpecificOutput"]["permissionDecisionReason"], True)
         check("declare: stored in private git dir", Path(git_dir, "dev-spec-owner.json").exists(), True)
         check("declare: never lands in worktree", (wt / ".dev-spec-owner.json").exists(), False)
+        common = g(repo, "rev-parse", "--absolute-git-dir")
+        check("declare: durable copy keyed by branch", Path(common, "dev-spec-owners", "wt-a.json").exists(), True)
         check("declare: identical re-declare ok", "归属已记录" in hook("worktree-guard.py", declare(decl), env)
               ["hookSpecificOutput"]["permissionDecisionReason"], True)
         widen = json.dumps({"base": checkpoint, "owned": ["**"], "forbidden": []})
@@ -117,7 +123,9 @@ def main() -> int:
 
         check("stop: no commits since base", decision(hook("worktree-guard.py", stop(), env)), "block")
         (wt / "src/a.py").write_text("a = 2\n")
-        check("stop: uncommitted change", decision(hook("worktree-guard.py", stop(), env)), "block")
+        out = hook("worktree-guard.py", stop(), env)
+        check("stop: uncommitted change", decision(out), "block")
+        check("stop: modified owned file not misread as out of scope", "超出归属" not in (out or {}).get("reason", ""), True)
         check("stop: second stop allowed", decision(hook("worktree-guard.py", stop(True), env)), None)
         g(wt, "commit", "-qam", "feat: a")
         check("stop: committed in scope", decision(hook("worktree-guard.py", stop(), env)), None)
@@ -127,7 +135,27 @@ def main() -> int:
         out = hook("worktree-guard.py", stop(), env)
         check("stop: committed outside scope (via Bash)", decision(out), "block")
         check("stop: reason names the file", "README.md" in (out or {}).get("reason", ""), True)
+        # rename from forbidden into owned is caught at stop (diff uses --no-renames)
+        (wt / "src/contract.py").rename(wt / "src/contract_moved.py")
+        g(wt, "add", "-A")
+        g(wt, "commit", "-qm", "refactor: move")
+        out = hook("worktree-guard.py", stop(), env)
+        check("stop: rename out of forbidden caught", "src/contract.py" in (out or {}).get("reason", ""), True)
         g(repo, "worktree", "remove", "--force", str(wt))
+
+        # declaration must be refused when the worktree does not contain the declared base
+        wt2 = Path(tmp, "repo/.claude/worktrees/b")
+        g(repo, "worktree", "add", "-q", "-b", "wt-b", str(wt2), base)       # created from the old base, not the checkpoint
+        decl2 = lambda b: {"hook_event_name": "PreToolUse", "tool_name": "Write", "cwd": str(wt2),
+                           "tool_input": {"file_path": str(wt2 / ".dev-spec-owner.json"),
+                                          "content": json.dumps({"base": b, "owned": ["src/**"]})}}
+        out = hook("worktree-guard.py", decl2(checkpoint), env)
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        check("declare: refused when worktree lacks checkpoint", "不包含基线" in reason and "归属已记录" not in reason, True)
+        check("declare: refused declaration not stored", Path(g(wt2, "rev-parse", "--absolute-git-dir"), "dev-spec-owner.json").exists(), False)
+        out = hook("worktree-guard.py", decl2("0" * 40), env)
+        check("declare: refused when base commit unknown", "不存在" in out["hookSpecificOutput"]["permissionDecisionReason"], True)
+        g(repo, "worktree", "remove", "--force", str(wt2))
 
     failed = [r for r in results if not r[1]]
     for name, ok, msg in results:

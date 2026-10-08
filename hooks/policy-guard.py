@@ -275,7 +275,7 @@ def git(cwd: str, *args: str) -> str | None:
         p = subprocess.run(["git", *args], cwd=cwd or None, capture_output=True, text=True, timeout=8)
     except (OSError, subprocess.SubprocessError):
         return None
-    return p.stdout.strip() if p.returncode == 0 else None
+    return p.stdout.rstrip("\n") if p.returncode == 0 else None  # keep leading spaces: porcelain status columns
 
 
 def worktree_base_ref(cwd: str, top: str) -> str:
@@ -302,7 +302,17 @@ def check_agent_dispatch(tool_input: dict, cwd: str) -> None:
     if not top:
         return
     status = git(top, "status", "--porcelain", "--untracked-files=normal") or ""
-    dirty = [l[3:] for l in status.splitlines() if l and not l[3:].startswith(".claude/worktrees/")]
+    dirty = []
+    for l in status.splitlines():
+        entry = l[3:]
+        if not l or entry.startswith(".claude/worktrees/"):
+            continue
+        if l.startswith("??") and ".claude/worktrees/".startswith(entry):   # git folded worktrees into `.claude/`
+            expanded = git(top, "status", "--porcelain", "--untracked-files=all", "--", entry,
+                           ":(exclude).claude/worktrees") or ""
+            dirty += [x[3:] for x in expanded.splitlines() if x]
+            continue
+        dirty.append(entry)
     if dirty:
         decide("ask", f"主工作树有 {len(dirty)} 个未提交改动（例：{dirty[0]}），worktree 子代理看不到它们。"
                       "先把共享契约提交为检查点；确认这些改动与该子代理无关再继续。")

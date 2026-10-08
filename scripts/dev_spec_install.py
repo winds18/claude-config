@@ -102,6 +102,7 @@ def components(manage_claude_md: bool) -> list[tuple[str, Path]]:
              ("agents/dev-spec", SRC / "agents"),
              ("hooks/dev-spec", SRC / "hooks")]
     comps += [(f"skills/{p.name}", p) for p in sorted((SRC / "skills").iterdir()) if p.is_dir()]
+    comps += [(f"workflows/{p.name}", p) for p in sorted((SRC / "workflows").glob("*.js"))]
     if manage_claude_md:
         comps.append(("CLAUDE.md", SRC / "global/CLAUDE.md"))
     return comps
@@ -299,7 +300,7 @@ def uninstall(home: Path, apply: bool) -> int:
             if not wt:
                 s.pop("worktree", None)
             write_json(sp, s)
-    for d in ("hooks", "agents", "skills", "rules"):
+    for d in ("hooks", "agents", "skills", "rules", "workflows"):
         p = home / d
         if p.is_dir() and not any(x for x in p.iterdir() if x.name != ".DS_Store"):
             shutil.rmtree(p)

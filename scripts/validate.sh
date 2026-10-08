@@ -7,14 +7,20 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail() { echo "  FAIL $*" >&2; exit 1; }
 
-echo "[1/5] 静态检查"
+echo "[1/7] 静态检查"
 python3 "$root/scripts/validate.py"
 
-echo "[2/5] 守卫行为测试"
+echo "[2/7] 守卫行为测试"
 python3 "$root/scripts/test_policy_guard.py"
 
-echo "[3/5] 并行守卫测试（真实 git worktree）"
+echo "[3/7] 并行守卫测试（真实 git worktree）"
 python3 "$root/scripts/test_parallel_guards.py"
+
+echo "[4/7] 集成脚本测试（真实 git worktree）"
+python3 "$root/scripts/test_integrate.py"
+
+echo "[5/7] workflow 脚本测试（模拟运行时）"
+if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
 
 # 构造一个"已有用户配置"的 home
 seed() {
@@ -48,6 +54,7 @@ roundtrip() {
   inst install "--$mode" --apply --force --manage-claude-md --retire-legacy-rules --claude-home "$h"   # 幂等
   [[ -f "$h/rules/dev-spec/01-core.md" && -f "$h/agents/dev-spec/implementer.md" ]] || fail "$mode: 组件缺失"
   [[ -f "$h/skills/parallel-dev/SKILL.md" && -f "$h/hooks/dev-spec/policy-guard.py" ]] || fail "$mode: 组件缺失"
+  [[ -f "$h/skills/parallel-dev/scripts/integrate.py" && -f "$h/workflows/dev-spec-implement.js" && -f "$h/workflows/dev-spec-review.js" ]] || fail "$mode: 集成脚本或 workflow 缺失"
   [[ ! -e "$h/rules/agents.md" ]] || fail "$mode: 旧规则未退役"
   grep -q "简体中文" "$h/CLAUDE.md" || fail "$mode: CLAUDE.md 未接管"
   [[ -f "$h/agents/zcf/planner.md" && -f "$h/skills/mine/SKILL.md" ]] || fail "$mode: 动了无关文件"
@@ -79,8 +86,8 @@ PY
   echo "  $mode 模式: 通过"
 }
 
-echo "[4/5] 安装往返：复制模式"
+echo "[6/7] 安装往返：复制模式"
 roundtrip copy
-echo "[5/5] 安装往返：软链接模式"
+echo "[7/7] 安装往返：软链接模式"
 roundtrip link
 echo "全部校验通过"
