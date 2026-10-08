@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$HOME/.claude/hooks/dev-spec/policy-guard.py\"; [ -f \"$f\" ] || exit 0; exec python3 \"$f\"",
+            "timeout": 10,
+            "statusMessage": "dev-spec 守卫检查"
+          }
+        ]
+      }
+    ]
+  }
+}
