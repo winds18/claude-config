@@ -4,9 +4,14 @@
 Active only inside a linked git worktree (a parallel writer). In the main checkout it
 does nothing, because ownership there is shared and enforced by the integrator.
 
-Ownership declaration (per worktree, never committed):
-    $(git rev-parse --git-dir)/dev-spec-owner.json
-    {"base": "<checkpoint sha>", "owned": ["src/api/**"], "forbidden": ["package-lock.json"]}
+Ownership declaration
+    The agent uses the Write tool on `<worktree>/.dev-spec-owner.json` with
+    {"base": "<checkpoint sha>", "owned": ["src/api/**"], "forbidden": ["package-lock.json"]}.
+    The hook intercepts that write, validates it and stores it in the worktree's private
+    git dir (the hook process is not subject to Claude's worktree isolation, which refuses
+    agent commands that touch .git/worktrees/). The write itself is denied with a
+    "recorded" message, so the file never enters the working tree or a commit.
+    Once recorded the declaration is locked: the agent cannot widen its own scope.
 
 PreToolUse (Edit/Write/MultiEdit/NotebookEdit)
     deny until the declaration exists; deny edits to forbidden or non-owned paths
@@ -29,6 +34,7 @@ import subprocess
 import sys
 
 OWNER_FILE = "dev-spec-owner.json"
+DECLARE_NAME = ".dev-spec-owner.json"
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 
@@ -99,8 +105,35 @@ class Worktree:
         return os.path.relpath(p, top).replace(os.sep, "/")
 
 
-DECLARE_HINT = (f'先按工作包声明归属：cat > "$(git rev-parse --git-dir)/{OWNER_FILE}" <<\'EOF\'\n'
-                '{"base": "<基线SHA>", "owned": ["<负责的 glob>"], "forbidden": ["<禁止修改的 glob>"]}\nEOF')
+DECLARE_HINT = (f"先用 Write 工具写 worktree 根目录的 `{DECLARE_NAME}` 声明归属，内容："
+                '{"base": "<基线SHA>", "owned": ["<负责的 glob>"], "forbidden": ["<禁止修改的 glob>"]}')
+
+
+def deny(reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                             "permissionDecision": "deny",
+                                             "permissionDecisionReason": f"[dev-spec worktree] {reason}"}},
+                     ensure_ascii=False))
+
+
+def record_declaration(content: object, wt: "Worktree") -> None:
+    try:
+        data = json.loads(content) if isinstance(content, str) else None
+    except ValueError as e:
+        return deny(f"归属声明不是合法 JSON：{e}")
+    globs_ok = lambda v: isinstance(v, list) and all(isinstance(x, str) and x.strip() for x in v)
+    if not isinstance(data, dict) or not globs_ok(data.get("owned")) or not data["owned"] \
+            or not globs_ok(data.get("forbidden", [])) or not isinstance(data.get("base", ""), str):
+        return deny('归属声明格式错误：需要 {"base": "<SHA>", "owned": [非空 glob 列表], "forbidden": [glob 列表]}')
+    data = {"base": data.get("base", ""), "owned": data["owned"], "forbidden": data.get("forbidden", [])}
+    current = wt.owner()
+    if current is not None and current != data:
+        return deny(f"归属已锁定为 owned={current.get('owned')}, forbidden={current.get('forbidden')}，"
+                    "不能自行修改；需要扩大范围时停止并回报负责人。")
+    with open(wt.owner_path, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    deny(f"✓ 归属已记录（存于 worktree 私有 git 目录，不进入工作区或提交）：owned={data['owned']}, "
+         f"forbidden={data['forbidden']}。这是预期结果，无需重试，也不要用其他方式写这个文件；继续下一步。")
 
 
 def out_of_scope(rel: str, owner: dict) -> str | None:
@@ -122,6 +155,9 @@ def pre_tool(event: dict, wt: Worktree) -> None:
     rel = wt.rel(path)
     if rel is None:
         return
+    if rel == DECLARE_NAME:
+        return record_declaration(ti.get("content"), wt) if event.get("tool_name") == "Write" \
+            else deny(f"用 Write 工具写 `{DECLARE_NAME}` 来声明归属。")
     owner = wt.owner()
     reason = None
     if owner is None:
@@ -130,10 +166,7 @@ def pre_tool(event: dict, wt: Worktree) -> None:
         reason = (f"`{rel}` {why}（owned={owner.get('owned')}, forbidden={owner.get('forbidden')}）。"
                   "需要改动时停止该部分并回报给契约负责人，不要绕过。")
     if reason:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                 "permissionDecision": "deny",
-                                                 "permissionDecisionReason": f"[dev-spec worktree] {reason}"}},
-                         ensure_ascii=False))
+        deny(reason)
 
 
 def branch_start(wt: Worktree) -> str | None:
@@ -156,7 +189,7 @@ def on_stop(event: dict, wt: Worktree) -> None:
         problems.append(f"有 {len(dirty)} 个未提交改动（例：{dirty[0]}）：按 Conventional Commits 提交到当前分支")
     owner = wt.owner()
     if owner is None:
-        problems.append("未声明写入归属（dev-spec-owner.json），主会话无法核对越界")
+        problems.append(f"未声明写入归属（{DECLARE_NAME}），主会话无法核对越界")
     else:
         start = branch_start(wt) or owner.get("base")
         changed = list(dirty)

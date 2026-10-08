@@ -24,7 +24,8 @@ agents/                     子代理
   security-reviewer.md      只读安全复核
   test-triager.md           只读失败归因（sonnet / medium）
 hooks/
-  policy-guard.py           PreToolUse 守卫：高危删除、危险 git、绕过权限、密钥提交
+  policy-guard.py           PreToolUse 守卫：高危删除、危险 git、绕过权限、密钥提交、worktree 派发检查
+  worktree-guard.py         implementer 专用：归属声明与越界拦截、结束前提交核验
   hooks.json                守卫的 settings 片段
 scripts/                    安装器（link/copy/doctor/uninstall）、校验与测试
 docs/design.md              设计说明
@@ -82,6 +83,18 @@ bash install.sh uninstall --apply
 | --- | --- |
 | deny | `rm -r` 根目录/主目录/系统目录/`..`；会话内启动跳过权限的 `claude`；暂存内容含高置信度密钥（私钥、AWS、GitHub、Anthropic、OpenAI、Slack、Google、Stripe live） |
 | ask | `rm -r .`；对受保护分支或未指定分支强推；删除远端分支；`reset --hard`、`clean -f`、`checkout/restore .`、`stash drop/clear`、`branch -D`、`worktree remove --force`；疑似硬编码凭证的提交；向文件写入疑似密钥 |
+
+### 并行守卫
+
+| 时机 | 检查 | 决策 |
+| --- | --- | --- |
+| 主会话派发 `isolation: "worktree"` 的 Agent | 主工作树有未提交改动；或 `worktree.baseRef` 非 head 且 HEAD 领先远端默认分支 | ask |
+| `implementer` 在 worktree 内编辑 | 未声明归属；路径在 forbidden 或不在 owned；试图改写已锁定的声明 | deny |
+| `implementer` 结束 | 未提交改动；自分支创建点无提交；改动越界（含经 Bash 写入） | 阻止一次结束 |
+
+归属声明：子代理用 Write 工具写 worktree 根目录 `.dev-spec-owner.json`，hook 截获后存入 worktree 私有 git 目录并锁定，文件不进入工作区。安装器会在用户设置里写入 `worktree.baseRef: "head"`（已有值时不动）。
+
+修改 `agents/*.md`（含 frontmatter hooks）后需**新开会话**才生效：子代理定义在会话启动时缓存。
 
 守卫只解析直接命令，不理解解释器、eval、变量展开；内部异常时放行。它是补充检查，权限模式与沙箱才是边界。确认是假数据时在该行加注释 `dev-spec: allow-secret`。
 

@@ -90,8 +90,24 @@ def main() -> int:
         check("main checkout: guard inactive", decision(hook("worktree-guard.py", main_edit, env)), None)
         check("worktree: edit before declaring ownership", decision(hook("worktree-guard.py", edit(str(wt / "src/a.py")), env)), "deny")
         git_dir = g(wt, "rev-parse", "--absolute-git-dir")
-        Path(git_dir, "dev-spec-owner.json").write_text(json.dumps(
-            {"base": checkpoint, "owned": ["src/**"], "forbidden": ["src/contract.py"]}))
+        declare = lambda content: {"hook_event_name": "PreToolUse", "tool_name": "Write", "cwd": str(wt),
+                                   "tool_input": {"file_path": str(wt / ".dev-spec-owner.json"), "content": content}}
+        out = hook("worktree-guard.py", declare("{not json"), env)
+        check("declare: invalid JSON rejected", "不是合法 JSON" in out["hookSpecificOutput"]["permissionDecisionReason"], True)
+        check("declare: empty owned rejected", "格式错误" in hook("worktree-guard.py", declare(json.dumps(
+            {"base": checkpoint, "owned": []})), env)["hookSpecificOutput"]["permissionDecisionReason"], True)
+        decl = json.dumps({"base": checkpoint, "owned": ["src/**"], "forbidden": ["src/contract.py"]})
+        out = hook("worktree-guard.py", declare(decl), env)
+        check("declare: recorded", "归属已记录" in out["hookSpecificOutput"]["permissionDecisionReason"], True)
+        check("declare: stored in private git dir", Path(git_dir, "dev-spec-owner.json").exists(), True)
+        check("declare: never lands in worktree", (wt / ".dev-spec-owner.json").exists(), False)
+        check("declare: identical re-declare ok", "归属已记录" in hook("worktree-guard.py", declare(decl), env)
+              ["hookSpecificOutput"]["permissionDecisionReason"], True)
+        widen = json.dumps({"base": checkpoint, "owned": ["**"], "forbidden": []})
+        check("declare: cannot widen own scope", "已锁定" in hook("worktree-guard.py", declare(widen), env)
+              ["hookSpecificOutput"]["permissionDecisionReason"], True)
+        edit_decl = edit(str(wt / ".dev-spec-owner.json"))
+        check("declare: Edit on declaration denied", decision(hook("worktree-guard.py", edit_decl, env)), "deny")
         check("worktree: owned path", decision(hook("worktree-guard.py", edit(str(wt / "src/a.py")), env)), None)
         check("worktree: relative owned path", decision(hook("worktree-guard.py", edit("src/new/b.py"), env)), None)
         check("worktree: forbidden contract", decision(hook("worktree-guard.py", edit(str(wt / "src/contract.py")), env)), "deny")

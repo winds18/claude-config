@@ -39,6 +39,8 @@
 - **集成协议**：worktree 子代理在自己分支提交并回报 SHA，主会话检查越界 diff 后按依赖顺序合入，再在集成状态上验证。
 - **只读角色的硬约束**：复核类子代理用 `tools` + `disallowedTools` 保证不能写文件，而不是只靠指令。
 - **代理团队质量门**：`TaskCompleted` hook 以 exit 2 拒绝未通过验收的任务完成。
+- **并行硬规则由 hook 强制**：派发 worktree 子代理前检查未提交改动与 baseRef；`implementer` 的 frontmatter hooks 强制归属声明、拦截越界编辑，并在结束时按分支创建点（reflog）核对提交与改动范围——后者也能发现经 Bash 写入的越界文件。
+- **实测得出的约束**（2026-10-08 端到端验证）：Claude 的 worktree 隔离会拒绝子代理含 `$(...)` 的命令和指向 `.git/worktrees/` 的路径，因此归属声明改为"Write 一个约定文件 → hook 进程截获并存入私有 git 目录"；子代理定义在会话启动时缓存，修改 frontmatter hooks 后需新会话生效；以声明的基线做 diff 会把父分支后续提交误判为越界，故以分支创建点为准。
 - **`ask` 决策**：Claude 的 PreToolUse 支持 `ask`，危险但可能合理的 git 操作交由用户确认，而不是一律拒绝。
 - **上下文经济**：大范围检索交给 Explore；长任务用后台运行与完成通知，禁止轮询。
 

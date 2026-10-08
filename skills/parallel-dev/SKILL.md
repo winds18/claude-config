@@ -43,7 +43,7 @@ when_to_use: 准备把工作拆给多个子代理或队友并行实现/复核，
 | 时机 | 检查 | 结果 |
 | --- | --- | --- |
 | 主会话派发 `isolation: "worktree"` 的 Agent | 主工作树有未提交改动；或 `worktree.baseRef` 非 head 且 HEAD 与远端默认分支不同 | ask：子代理看不到这些内容 |
-| `implementer` 在 worktree 内编辑 | 未声明 `dev-spec-owner.json`；路径属于 forbidden 或不在 owned | deny |
+| `implementer` 在 worktree 内编辑 | 未声明归属（Write `.dev-spec-owner.json`，hook 截获并锁定）；路径属于 forbidden 或不在 owned；试图改写已锁定的声明 | deny |
 | `implementer` 结束 | 有未提交改动；自基线无提交；基线 diff 越界（含 Bash 写入） | 阻止一次结束并要求处理；第二次放行，由回报说明 |
 
 Hook 是防漂移的补充，集成时仍须按 §5 检查真实 diff。

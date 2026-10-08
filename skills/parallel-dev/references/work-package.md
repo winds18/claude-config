@@ -14,9 +14,8 @@
 ## 归属
 - 你负责（可写）：<文件/目录 glob>
 - 禁止修改：<共享类型、锁文件、迁移、全局配置……；需要改时回报，不要自己改>
-- 开工先写归属声明（worktree 内由 hook 强制）：
-  `{"base": "<基线SHA>", "owned": [<上面的负责 glob>], "forbidden": [<上面的禁止 glob>]}`
-  → `$(git rev-parse --git-dir)/dev-spec-owner.json`
+- 开工先声明归属（worktree 内由 hook 强制并锁定）：用 Write 工具写 worktree 根目录 `.dev-spec-owner.json`，
+  内容 `{"base": "<基线SHA>", "owned": [<上面的负责 glob>], "forbidden": [<上面的禁止 glob>]}`；返回"✓ 归属已记录"即成功
 - 运行资源：端口 <n>，数据库 <name>，输出目录 <path>
 
 ## 契约

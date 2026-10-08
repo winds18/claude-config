@@ -21,13 +21,9 @@ hooks:
 
 ## 开工
 
-1. 在 worktree 中（`git rev-parse --git-dir` 与 `--git-common-dir` 不同即为 worktree）先声明写入归属，内容取自工作包的"基线"与"归属"：
-   ```bash
-   cat > "$(git rev-parse --git-dir)/dev-spec-owner.json" <<'EOF'
-   {"base": "<基线SHA>", "owned": ["<负责的 glob>"], "forbidden": ["<禁止修改的 glob>"]}
-   EOF
-   ```
-   该文件位于 worktree 私有的 git 目录，不会被提交。未声明前 hook 会拒绝 worktree 内的编辑；越界编辑同样会被拒绝。
+1. 在 worktree 中先声明写入归属：用 **Write 工具**写 worktree 根目录的 `.dev-spec-owner.json`，内容取自工作包：
+   `{"base": "<基线SHA>", "owned": ["<负责的 glob>"], "forbidden": ["<禁止修改的 glob>"]}`
+   hook 会截获这次写入并记录到 worktree 私有的 git 目录，返回"✓ 归属已记录"——这是预期结果，不要重试，也不要用 Bash 写这个文件（worktree 隔离会拒绝访问 `.git/worktrees/`）。声明一经记录即锁定。未声明前 worktree 内的编辑会被拒绝；越界编辑同样会被拒绝。
 2. 执行工作包给出的依赖安装/准备命令。
 
 ## 规则
