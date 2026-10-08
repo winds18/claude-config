@@ -152,6 +152,6 @@ bash scripts/validate.sh
 
 迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前与自动更新时跑全量。
 
-校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
+校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；交叉引用（文档里的 integrate/install 子命令与参数、workflow 与技能名、§ 章节、子代理类型、workflow 参数字段、README 目录树都必须真实存在）；派发脚本测试；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
 
 修改原则：常驻规则只放跨任务硬原则，流程细节进技能且只维护一处；新增约束要在 `docs/incidents.md` 或 `docs/design.md` 中有依据。

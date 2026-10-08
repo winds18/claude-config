@@ -122,14 +122,15 @@ def test_clean_and_valid_refs(tmp: Path) -> None:
 
     # 合法引用不得误报；/dev-spec-<name> 也可以是 skills/<name>/SKILL.md
     repo = copy_repo(tmp, "valid")
-    d = repo / "skills/dev-spec-dispatch"
+    # a dedicated fake name: the real dev-spec-dispatch skill exists after integration (incidents: 2026-10-08 集成冲突)
+    d = repo / "skills/dev-spec-fakeskill"
     d.mkdir()
-    (d / "SKILL.md").write_text("---\nname: dev-spec-dispatch\ndescription: test\n---\n\n## 1. 一\n")
+    (d / "SKILL.md").write_text("---\nname: dev-spec-fakeskill\ndescription: test\n---\n\n## 1. 一\n")
     append(repo, "docs/design.md", "\n".join([
         "",
         "- `integrate.py apply wt-a wt-b --verify \"pytest --maxfail 1\" --no-owner-check` 与 `integrate.py status --json`",
         "- `bash install.sh update --claude-home /tmp/x`；`bash install.sh --link --no-auto-update --apply`",
-        "- `/dev-spec-review`、`/dev-spec-implement`、`/dev-spec-dispatch`；路径 `~/.claude/dev-spec-backups/` 与 `hooks/dev-spec/x.py` 不是命令",
+        "- `/dev-spec-review`、`/dev-spec-implement`、`/dev-spec-fakeskill`；路径 `~/.claude/dev-spec-backups/` 与 `hooks/dev-spec/x.py` 不是命令",
         "- `parallel-dev` §4、parallel-dev §6–7、`dev-workflow` 技能 §7、`skills/parallel-dev/SKILL.md` §2",
         "- `Agent(subagent_type: \"Explore\")`、`agentType: 'reviewer'`、`subagent_type: \"general-purpose\"`",
         "",
