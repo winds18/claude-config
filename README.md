@@ -44,7 +44,11 @@ bash install.sh --link --manage-claude-md --retire-legacy-rules --apply
 **其他设备**：克隆本仓库后复制安装；之后 `git pull` 并重新执行同一命令即可更新。
 
 ```bash
-bash install.sh --copy --manage-claude-md --retire-legacy-rules --apply
+git clone https://github.com/winds18/claude-config.git
+```
+
+```bash
+cd claude-config && bash install.sh --copy --manage-claude-md --retire-legacy-rules --apply
 ```
 
 | 选项 | 作用 |
