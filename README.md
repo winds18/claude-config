@@ -18,11 +18,13 @@ skills/                     按需加载的流程（细节只维护在这里）
   dev-workflow/             L 档五阶段、质量表、测试矩阵、复核、PR 与 CI
   parallel-dev/             派发前检查、工作包、workflow 派发、集成与冲突、接管、代理团队、跨仓
     scripts/integrate.py    确定性集成：preflight / status / plan / apply / cleanup
+  dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → workflow 参数；复核规模计算
+    scripts/dispatch.py     check / prepare / review-args
   project-bootstrap/        /project-bootstrap：项目 CLAUDE.md、settings、worktree 准备（含模板）
 workflows/                  dynamic workflow，安装为 /命令
-  dev-spec-implement.js     每包一个 worktree implementer + 结构化回报 + 包级复核
+  dev-spec-implement.js     每包：对抗用例设计 → worktree implementer（先写测试）→ 包级复核
   dev-spec-review.js        多视角并行发现 → 去重 → 逐条对抗验证
-agents/                     子代理：implementer、reviewer、security-reviewer、test-triager
+agents/                     子代理：implementer、case-designer、reviewer、security-reviewer、test-triager
 hooks/
   policy-guard.py           PreToolUse：高危删除、危险 git、绕过权限、密钥提交、worktree 派发检查
   dev_spec_update.py        SessionStart（异步）：校验后静默自我更新
@@ -109,10 +111,10 @@ bash install.sh uninstall --apply
 | 步骤 | 做法 |
 | --- | --- |
 | 定方案 | `dev-workflow` 需求→架构→契约；方向不明且代价高时才进 Plan 模式 |
-| 检查点 | 提交契约，`integrate.py preflight --base <SHA>` 无阻塞 |
-| 并行实现 | `/dev-spec-implement`（args：base、contract、packages），得到 `ready` 分支与包级复核 |
+| 准备 | `/dev-spec-dispatch`：计划表 → 校验归属 → 任务分支上提交检查点 → preflight → workflow 参数 |
+| 并行实现 | `/dev-spec-implement`：每包先列对抗用例、先写测试后实现，得到 `ready` 分支与包级复核 |
 | 集成 | `integrate.py plan` → `apply <分支…> --verify "<验收>"` → `cleanup` |
-| 复核 | `/dev-spec-review`（args：`{"range": "<检查点>..HEAD"}`），只处理被证实的问题 |
+| 复核 | `dispatch.py review-args` 按规模与风险算出视角和 effort → `/dev-spec-review`，只处理被证实的问题 |
 | 交付 | 完成条件 + 交付说明；PR/CI 见 `dev-workflow` §7 |
 
 4. 会话被压缩或恢复后，先 `integrate.py status` 从 git 恢复并行状态。
@@ -147,6 +149,8 @@ dynamic workflow 需在 `/config` 中开启（部分计划默认关闭）；不�
 ```bash
 bash scripts/validate.sh
 ```
+
+迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前与自动更新时跑全量。
 
 校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
 

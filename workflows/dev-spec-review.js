@@ -4,7 +4,9 @@ export const meta = {
   phases: ['发现', '对抗验证'],
 }
 
-// args: { range: "<base>..<head>" | "<base>", focus?: "<额外关注点>", lenses?: ["correctness", ...] }
+// args: { range: "<base>..<head>" | "<base>", focus?: "<额外关注点>", lenses?: ["correctness", ...],
+//         finder_effort?: "medium"（发现阶段，默认 medium）, verify_effort?: <省略则继承会话> }
+// 视角与 effort 可由 dev-spec-dispatch 的 review-args 按改动规模和路径风险算出
 // 视角可选：correctness, contract, security, performance, tests
 
 const LENSES = {
@@ -73,7 +75,7 @@ const found = await parallel(lenses.map(lens => async () => {
       `只读复核 git diff ${range}（先 git diff --stat ${range} 了解范围，再读受影响的调用方与被调用方）。\n` +
       `本轮只看一个视角——${LENSES[lens].ask}。\n${args.focus ? `额外关注：${args.focus}\n` : ''}` +
       `每条发现必须给出可复现的触发条件与错误结果；风格偏好、泛泛的"建议加测试"不算。没有发现就返回空数组。`,
-      { agentType: LENSES[lens].agentType, schema: FINDINGS, label: `发现·${lens}`, phase: '发现' },
+      { agentType: LENSES[lens].agentType, schema: FINDINGS, label: `发现·${lens}`, phase: '发现', effort: args.finder_effort || 'medium' },
     )
     return r ? { lens, findings: r.findings.map(f => ({ ...f, lens })) } : { lens, failed: true, findings: [] }
   } catch (e) {
@@ -93,7 +95,8 @@ const verdicts = await pipeline(candidates, async f => {
       `你是对抗验证者：尽力证伪下面这条复核发现，只有在无法证伪时才判 confirmed。\n` +
       `范围：git diff ${range}\n发现：${f.file}:${f.line} [${f.severity}] ${f.problem}\n声称的触发条件：${f.trigger}\n` +
       `方法：阅读真实代码路径；能用只读命令或现有测试验证的就去验证。证据不足时判 uncertain，不要猜。`,
-      { agentType: 'reviewer', schema: VERIFY, label: `验证 ${f.file}:${f.line}`, phase: '对抗验证' },
+      args.verify_effort ? { agentType: 'reviewer', schema: VERIFY, label: `验证 ${f.file}:${f.line}`, phase: '对抗验证', effort: args.verify_effort }
+        : { agentType: 'reviewer', schema: VERIFY, label: `验证 ${f.file}:${f.line}`, phase: '对抗验证' },
     )
     return { ...f, verdict: v ? v.verdict : 'uncertain', evidence: v ? v.evidence : '验证代理未返回结果', severity: (v && v.severity) || f.severity }
   } catch (e) {

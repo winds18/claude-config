@@ -22,6 +22,8 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 
 包数 ≥ 2 时并行；只有 1 个包时主会话直接实现。
 
+**最省事的入口是 `/dev-spec-dispatch` 技能**：写一张计划表，它负责校验归属重叠、在任务分支提交检查点、运行 preflight，并输出下面这份 args。
+
 **首选 `/dev-spec-implement` workflow**（Workflow 工具可用时）。它为每个包派一个 worktree 隔离的 `implementer`，强制结构化回报，随后由独立 `reviewer` 对照契约复核该包；参数无效（缺基线、归属重叠、缺验收）时直接报错，不派发。args 示例：
 
 ```json
@@ -37,6 +39,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 ```
 
 - 机械性的包设 `effort: "low"/"medium"` 省成本；核心逻辑不设（继承会话）。
+- workflow 会先为每个包运行 `case-designer` 列出对抗用例，实现者先写成测试再实现，包级复核逐条核对；`case_design: false` 可关闭（仅限纯机械改动）。
 - 结果中 `ready` 是 done 且包级复核通过的分支，`needs_attention` 需要你处理（blocked、partial、fix-needed）。
 
 **回退：手动派发**（Workflow 不可用时）：按 [references/work-package.md](references/work-package.md) 写自包含工作包，同一消息内并发多个 `Agent(subagent_type: "implementer", isolation: "worktree", run_in_background: true)`，给每个代理起名以便 `SendMessage` 续接。
@@ -62,7 +65,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 2. `integrate.py apply [分支…] --verify "<集成验收命令>"`：按给定顺序 `merge --no-ff`，冲突时自动 `merge --abort` 并停止，最后在集成状态上运行验收。顺序按依赖：被依赖的先合。
    - **冲突**：归属不重叠时冲突通常来自共享文件被多方改动，说明归属被破坏或契约在途变化。不要在主工作树手工拼接：把冲突分支交还其负责人（`SendMessage` 续接原 implementer，或派新的 implementer 接手该分支），让它在自己的 worktree 合入当前集成 HEAD 并解决冲突、重新提交，然后重新 `plan`。锁文件、生成文件这类归主会话的共享文件，由主会话在合并后统一重新生成并单独提交。
    - **验收失败**：交 `test-triager` 归因，修复归属方负责；修复后重跑 `apply` 的验收命令。
-3. 集成后复核：`/dev-spec-review` workflow，args `{"range": "<检查点>..HEAD"}`；只处理 `confirmed`，`uncertain` 自行核实。不可用时并行派 `reviewer` 与 `security-reviewer`。
+3. 集成后复核：`/dev-spec-review` workflow，args 用 `/dev-spec-dispatch` 的 `review-args --range <检查点>..HEAD` 生成（按规模与风险选视角和 effort）；只处理 `confirmed`，`uncertain` 自行核实。不可用时并行派 `reviewer` 与 `security-reviewer`。
 4. `integrate.py cleanup`：只移除已合入且干净的 worktree 与分支，其余列出原因。
 
 压缩或恢复会话后先跑 `integrate.py status`，从 git 恢复各 worktree 的分支、归属、领先提交与合入状态。查看 worktree 用 `git -C <path>`，不要 `cd` 进去（会改变主会话的工作目录）。

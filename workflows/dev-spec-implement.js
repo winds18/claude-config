@@ -1,7 +1,7 @@
 export const meta = {
   name: 'dev-spec-implement',
-  description: 'dev-spec 并行实现：每个工作包一个 worktree 隔离的 implementer，结构化回报，随后由独立 reviewer 对照契约做包级复核',
-  phases: ['实现', '包级复核'],
+  description: 'dev-spec 并行实现：每包先由 case-designer 列出对抗用例，再由 worktree 隔离的 implementer 先写测试后实现并结构化回报，最后由独立 reviewer 对照契约与用例做包级复核',
+  phases: ['用例设计', '实现', '包级复核'],
 }
 
 // args: {
@@ -11,7 +11,8 @@ export const meta = {
 //     name, goal, owned: [glob], forbidden?: [glob], setup?: "<命令>",
 //     verify: ["<验收命令>"], resources?: "<端口/数据库/输出目录>", notes?: "<关键约束>",
 //     effort?: "low"|"medium"|"high"|"xhigh"|"max"
-//   }]
+//   }],
+//   case_design?: true    // false 时跳过用例设计阶段
 // }
 // 返回每个包的结构化回报与复核结论；合并由主会话用 integrate.py 完成（workflow 不能写主工作树）。
 
@@ -34,6 +35,28 @@ const REPORT = {
     unverified: { type: 'array', items: { type: 'string' } },
     contract_issues: { type: 'array', items: { type: 'string' } },
     notes: { type: 'string' },
+  },
+}
+
+const CASES = {
+  type: 'object',
+  required: ['cases'],
+  properties: {
+    cases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['priority', 'name', 'given', 'when', 'then', 'prevents'],
+        properties: {
+          priority: { type: 'string', enum: ['high', 'medium', 'low'] },
+          name: { type: 'string' },
+          given: { type: 'string' },
+          when: { type: 'string' },
+          then: { type: 'string' },
+          prevents: { type: 'string' },
+        },
+      },
+    },
   },
 }
 
@@ -96,7 +119,21 @@ function validate(a) {
   if (errors.length) throw new Error('工作包无效：\n- ' + errors.join('\n- '))
 }
 
-function implementPrompt(p, a) {
+function casePrompt(p, a) {
+  return [
+    `为工作包「${p.name}」设计对抗用例，供实现者在写代码前先写成测试。`,
+    `目标：${p.goal}`,
+    `负责范围：${p.owned.join(', ')}${a.contract ? `\n契约权威来源：${a.contract}` : ''}${p.notes ? `\n关键约束：${p.notes}` : ''}`,
+    `基线提交：${a.base}（只读查看现有代码与测试：git show ${a.base}:<path>、git grep）`,
+    `只列与本包改动真实相关、会让实现出错的场景，5–12 条，按出错代价与可能性排序。`,
+  ].join('\n')
+}
+
+function formatCases(cases) {
+  return cases.map((c, i) => `${i + 1}. [${c.priority}] ${c.name}：${c.given} → ${c.when} → ${c.then}（防止：${c.prevents}）`).join('\n')
+}
+
+function implementPrompt(p, a, cases) {
   const decl = JSON.stringify({ base: a.base, owned: p.owned, forbidden: p.forbidden || [] })
   return [
     `## 目标\n${p.goal}`,
@@ -107,19 +144,21 @@ function implementPrompt(p, a) {
     p.resources ? `- 运行资源：${p.resources}` : '',
     a.contract || p.notes ? `## 契约\n${a.contract ? `- 权威来源：${a.contract}\n` : ''}${p.notes ? `- 关键约束：${p.notes}` : ''}` : '',
     `## 授权\n- 可以：在当前 worktree 分支本地提交\n- 禁止：push、修改归属外文件、用 Bash 写文件绕过 hook`,
+    cases && cases.length ? `## 先写成测试的场景（对抗用例）\n先把下列场景写成测试并确认它们在实现前失败（或说明为何不适用），再实现：\n${formatCases(cases)}` : '',
     `## 验收\n${p.verify.map(c => `- ${c}`).join('\n')}\n- 不得删测试、弱化断言或跳过错误来通过`,
     `## 回报\n按 schema 返回：status（done/partial/blocked）、branch、sha（git rev-parse HEAD）、files、` +
       `checks（每条实际运行的命令与真实退出码）、unverified、contract_issues。`,
   ].filter(Boolean).join('\n\n')
 }
 
-function reviewPrompt(p, a, rep) {
+function reviewPrompt(p, a, rep, cases) {
   return [
     `复核工作包「${p.name}」在分支 ${rep.branch} 上的改动：git diff ${a.base}..${rep.branch}`,
     `目标：${p.goal}`,
     a.contract ? `契约权威来源：${a.contract}` : '',
     p.notes ? `关键约束：${p.notes}` : '',
     `实现者自报的检查：${JSON.stringify(rep.checks)}；未验证面：${JSON.stringify(rep.unverified)}`,
+    cases && cases.length ? `对抗用例（逐条核对是否有对应测试；缺失且未说明理由的算 fix-needed）：\n${formatCases(cases)}` : '',
     `重点：是否实现目标、是否与契约及其消费者一致、失败路径与边界、是否删测试或弱化断言、自报检查是否可信。` +
       `只报有触发条件的真实问题；没有问题时 verdict 为 pass、findings 为空数组。`,
   ].filter(Boolean).join('\n')
@@ -128,28 +167,39 @@ function reviewPrompt(p, a, rep) {
 validate(args)
 log(`基线 ${args.base.slice(0, 10)}，${args.packages.length} 个工作包`)
 
-// 不依赖 pipeline 传给后续阶段的第二个参数：阶段 1 把包本身带下去
+// 不依赖 pipeline 传给后续阶段的第二个参数：每个阶段把包本身带下去
+const designCases = args.case_design !== false
 const results = await pipeline(
   args.packages,
   async p => {
+    if (!designCases) return { p, cases: [] }
+    try {
+      const r = await agent(casePrompt(p, args), { agentType: 'case-designer', schema: CASES, label: `用例 ${p.name}`, phase: '用例设计', effort: 'medium' })
+      return { p, cases: r ? r.cases : [], caseNote: r ? undefined : '用例设计代理未返回结果' }
+    } catch (e) {
+      return { p, cases: [], caseNote: `用例设计代理异常：${e && e.message}` }   // 不阻塞实现，回报中注明
+    }
+  },
+  async ({ p, cases, caseNote }) => {
     const opts = { agentType: 'implementer', isolation: 'worktree', schema: REPORT, label: `实现 ${p.name}`, phase: '实现' }
     if (p.effort) opts.effort = p.effort
     try {
-      return { p, rep: await agent(implementPrompt(p, args), opts) }
+      return { p, cases, caseNote, rep: await agent(implementPrompt(p, args, cases), opts) }
     } catch (e) {
-      return { p, rep: null, error: `实现代理异常：${e && e.message}` }
+      return { p, cases, caseNote, rep: null, error: `实现代理异常：${e && e.message}` }
     }
   },
-  async ({ p, rep, error }) => {
-    if (!rep) return { package: p.name, report: null, review: null, error: error || '实现代理未返回结果' }
-    if (rep.status === 'blocked' || !rep.branch) return { package: p.name, report: rep, review: null }
+  async ({ p, cases, caseNote, rep, error }) => {
+    const base = { package: p.name, cases: cases.length, case_note: caseNote }
+    if (!rep) return { ...base, report: null, review: null, error: error || '实现代理未返回结果' }
+    if (rep.status === 'blocked' || !rep.branch) return { ...base, report: rep, review: null }
     try {
-      const review = await agent(reviewPrompt(p, args, rep), {
+      const review = await agent(reviewPrompt(p, args, rep, cases), {
         agentType: 'reviewer', schema: VERDICT, label: `复核 ${p.name}`, phase: '包级复核',
       })
-      return { package: p.name, report: rep, review, error: review ? undefined : '复核代理未返回结果' }
+      return { ...base, report: rep, review, error: review ? undefined : '复核代理未返回结果' }
     } catch (e) {
-      return { package: p.name, report: rep, review: null, error: `复核代理异常：${e && e.message}` }
+      return { ...base, report: rep, review: null, error: `复核代理异常：${e && e.message}` }
     }
   },
 )

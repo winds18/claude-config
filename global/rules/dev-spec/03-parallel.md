@@ -6,7 +6,7 @@
 | 需要 | 机制 |
 | --- | --- |
 | 只要结论的大范围检索、长日志或失败归因 | `Explore` / `test-triager` 子代理 |
-| 2 个以上可独立验证的包并行实现 | `parallel-dev` 技能：`/dev-spec-implement` workflow，不可用时手动派 `implementer` |
+| 2 个以上可独立验证的包并行实现 | `/dev-spec-dispatch` 准备 → `/dev-spec-implement` workflow（不可用时按 `parallel-dev` 手动派 `implementer`） |
 | L 档集成后的多视角复核 | `/dev-spec-review` workflow，不可用时并行派 `reviewer` / `security-reviewer` |
 | 同一机械变换作用于大量文件 | `/batch` 或 workflow pipeline |
 | 成员需互相讨论、长期分端协作 | 代理团队（实验特性，需启用） |

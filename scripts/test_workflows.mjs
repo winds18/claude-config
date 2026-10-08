@@ -124,6 +124,25 @@ async function testImplement() {
     check(`implement: 重叠检查覆盖 ${g1} vs ${g2}`, res.error && res.error.message.includes('归属重叠') && res.calls.length === 0, res.error && res.error.message)
   }
 
+  // 用例设计阶段：用例注入实现与复核提示；失败不阻塞；可关闭
+  const CASE = { priority: 'high', name: '改名绕过', given: 'forbidden 下有文件', when: 'git mv 到 owned', then: '被判越界', prevents: '漏检越界' }
+  const withCases = (p, o) => (o.agentType === 'case-designer' ? { cases: [CASE] } : impl(p, o))
+  const wc = await run(src, { base, packages: pkgs.slice(0, 1) }, withCases)
+  const designer = wc.calls.filter(c => c.opts.agentType === 'case-designer')
+  check('implement: 每包先跑一次用例设计（只读、medium）', designer.length === 1 && designer[0].opts.effort === 'medium' && !designer[0].opts.isolation)
+  const implPrompt = wc.calls.find(c => c.opts.agentType === 'implementer').prompt
+  check('implement: 用例注入实现提示并要求先写测试', implPrompt.includes('先写成测试的场景') && implPrompt.includes('改名绕过'))
+  const revPrompt = wc.calls.find(c => c.opts.agentType === 'reviewer').prompt
+  check('implement: 复核逐条核对用例', revPrompt.includes('逐条核对') && revPrompt.includes('改名绕过'))
+  check('implement: 回报带用例数量', wc.value.packages[0].cases === 1)
+  const order = wc.calls.map(c => c.opts.agentType).join('>')
+  check('implement: 顺序为 用例→实现→复核', order === 'case-designer>implementer>reviewer', order)
+  const caseCrash = await run(src, { base, packages: pkgs.slice(0, 1) }, (p, o) => { if (o.agentType === 'case-designer') throw new Error('x'); return impl(p, o) })
+  check('implement: 用例设计失败不阻塞实现并注明', caseCrash.value && caseCrash.value.ready.length === 1 && /用例设计代理异常/.test(caseCrash.value.packages[0].case_note),
+    JSON.stringify(caseCrash.value && caseCrash.value.packages[0]))
+  const noCase = await run(src, { base, packages: pkgs.slice(0, 1), case_design: false }, withCases)
+  check('implement: case_design=false 跳过用例阶段', !noCase.calls.some(c => c.opts.agentType === 'case-designer'))
+
   // 回归：不依赖 pipeline 传给后续阶段的第二个参数
   const strict = await run(src, { base, contract: 'c', packages: pkgs }, impl, { prevOnly: true })
   check('implement: 运行时只传 prev 时结果不变', !strict.error && JSON.stringify(strict.value.ready) === JSON.stringify(['worktree-api'])
@@ -171,6 +190,12 @@ async function testReview() {
     && r.value.confirmed[0].lenses.length === 2, JSON.stringify(r.value.confirmed))
   check('review: 被证伪的问题不输出', r.value.refuted === 1 && !r.value.confirmed.some(f => f.file === 'b.py'))
   check('review: 单个视角崩溃不影响整体', !r.error)
+
+  check('review: 发现阶段默认 effort medium', finders.every(c => c.opts.effort === 'medium'))
+  check('review: 验证阶段默认继承会话 effort', verifies.every(c => !('effort' in c.opts)))
+  const eff = await run(src, { range: 'a..b', lenses: ['correctness'], finder_effort: 'high', verify_effort: 'xhigh' },
+    (p, o) => (o.phase === '发现' ? { findings: [{ severity: 'low', file: 'q.py', line: 1, problem: 'p', trigger: 't' }] } : { verdict: 'confirmed', evidence: 'e' }))
+  check('review: effort 可由 args 覆盖', eff.calls[0].opts.effort === 'high' && eff.calls[1].opts.effort === 'xhigh')
 
   const empty = await run(src, { range: 'a..b' }, () => ({ findings: [] }))
   check('review: 无候选时提前结束、不做验证', empty.value.confirmed.length === 0 && empty.calls.length === 5)
