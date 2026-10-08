@@ -31,6 +31,8 @@ hooks/
   worktree-guard.py         implementer 专用：归属声明（含基线校验）、越界拦截、结束前提交核验
   hooks.json                守卫的 settings 片段
 scripts/                    安装器（link/copy/doctor/uninstall）、validate.sh 与各项测试
+  release.py                发布闸门：CI 通过的 main 提交 → tag + GitHub Release
+.github/workflows/ci.yml    CI：Linux（Python 3.9 / 3.13）与 macOS 上跑全量校验
 docs/
   design.md                 设计取舍与依据
   incidents.md              事件记录：每条规则修订的来源
@@ -85,7 +87,7 @@ bash install.sh uninstall --apply
 
 安装后默认开启。每次会话启动时，一个异步 `SessionStart` hook 在后台检查更新（默认最多每 6 小时一次），不拖慢启动、不打扰对话：
 
-1. `git fetch` 安装时记录的规范仓库；
+1. `git fetch` 安装时记录的规范仓库。默认 **stable 通道只跟随发布 tag（vX.Y.Z）**，合入 `main` 不会推到其他设备；`--channel main` 改为跟随主分支（只建议用于开发机）。已发布的 tag 被移动时拒绝跟随；
 2. 只接受**干净的 fast-forward**：仓库有未提交改动、有未推送的本地提交、历史分叉或不在跟踪分支上时一律跳过（不会碰你正在开发的内容）；
 3. 把新版本检出到临时 worktree，跑完整的 `scripts/validate.sh`，**不通过就保持当前版本**；
 4. 通过后 fast-forward 并按安装时记住的选项重装；重装失败则把源仓库退回原版本。
@@ -95,7 +97,8 @@ bash install.sh uninstall --apply
 | `bash install.sh update` | 立即检查并更新，输出过程 |
 | `bash install.sh doctor` | 查看最近一次检查的时间、结果与版本 |
 | `--no-auto-update` / `--auto-update` | 关闭 / 重新开启（选择会被记住） |
-| `--require-signed` | 只接受带有效签名的提交（需配置 `git verify-commit` 可用的签名） |
+| `--channel stable` / `--channel main` | 更新通道：发布 tag（默认）/ 主分支 |
+| `--require-signed` | 只接受带有效签名的 tag（stable）或提交（main） |
 | `DEV_SPEC_UPDATE_INTERVAL_HOURS` | 环境变量，覆盖检查间隔 |
 
 结果写入 `~/.claude/dev-spec-update.json`，过程追加到 `~/.claude/dev-spec-update.log`。新规则从下一个会话起生效，技能、hook、workflow 即时生效。退役旧规则这类一次性迁移不会在更新时重复执行。
@@ -151,6 +154,8 @@ bash scripts/validate.sh
 ```
 
 迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前与自动更新时跑全量。
+
+发布：改动经 PR 合入 `main`、CI 通过后运行 `python3 scripts/release.py X.Y.Z`（先加 `--dry-run` 预览）。它只在 HEAD 等于 origin/main 且该提交的 CI 全部通过时打 tag，并从提交信息生成发布说明。
 
 校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；交叉引用（文档里的 integrate/install 子命令与参数、workflow 与技能名、§ 章节、子代理类型、workflow 参数字段、README 目录树都必须真实存在）；派发脚本测试；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
 

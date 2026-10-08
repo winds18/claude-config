@@ -80,7 +80,7 @@ def main() -> int:
         # ---------- copy mode ----------
         home = tmp / "home-copy"
         home.mkdir()
-        r = install(home, "--copy")
+        r = install(home, "--copy", "--channel", "main")         # these scenarios track the branch head
         check("安装成功", r.returncode == 0, r.stdout + r.stderr)
         m = json.loads((home / ".dev-spec-manifest.json").read_text())
         check("默认开启自动更新并记录选项", m["options"]["auto_update"] is True and m["mode"] == "copy", str(m.get("options")))
@@ -94,7 +94,7 @@ def main() -> int:
         check("hook 模式静默运行（无输出）", r.returncode == 0 and r.stdout == "", r.stdout + r.stderr)
         check("拉取并安装新版本", "v2" in (home / "rules/dev-spec/01-core.md").read_text(), state(home).get("last_result", ""))
         check("源仓库 fast-forward 到远端", git(src, "rev-parse", "HEAD") == v2)
-        check("记录更新结果与版本", state(home).get("last_result") == "已更新" and state(home).get("version") == v2[:10], str(state(home)))
+        check("记录更新结果与版本", state(home).get("last_result") == "已更新" and v2.startswith(str(state(home).get("version"))), str(state(home)))
 
         publish("v3")
         before = state(home).get("last_check")
@@ -161,11 +161,51 @@ def main() -> int:
         home2.mkdir()
         sh("git", "-C", str(src), "fetch", "-q", "origin")
         sh("git", "-C", str(src), "merge", "-q", "--ff-only", "origin/main")
-        install(home2, "--link")
+        install(home2, "--link", "--channel", "main")
         v6 = publish("v6")
         updater(home2, now=True)
         check("link 模式：源仓库更新后软链接即生效", "v6" in (home2 / "rules/dev-spec/01-core.md").read_text()
               and (home2 / "rules/dev-spec").is_symlink() and git(src, "rev-parse", "HEAD") == v6, str(state(home2)))
+
+        # ---------- stable channel: follows release tags only ----------
+        src3, home3 = tmp / "src3", tmp / "home-stable"
+        sh("git", "clone", "-q", str(origin), str(src3))
+        home3.mkdir()
+        r = sh(sys.executable, str(src3 / "scripts/dev_spec_install.py"), "install", "--apply", "--skip-version-check",
+               "--claude-home", str(home3), "--copy")
+        m3 = json.loads((home3 / ".dev-spec-manifest.json").read_text())
+        check("stable: 默认通道为 stable 并记录版本", m3["options"]["update_channel"] == "stable" and m3.get("spec_version"), str(m3.get("options")))
+        updater(home3, now=True)
+        check("stable: 没有发布 tag 时跳过", "没有发布 tag" in state(home3).get("last_result", ""), str(state(home3)))
+        git(dev, "fetch", "-q", "origin"); git(dev, "merge", "-q", "--ff-only", "origin/main")
+        t1 = publish("rel-1")
+        git(dev, "tag", "-a", "v0.1.0", "-m", "v0.1.0"); git(dev, "push", "-q", "origin", "v0.1.0")
+        publish("after-rel-1")                                       # on main, not released
+        updater(home3, now=True)
+        rule3 = (home3 / "rules/dev-spec/01-core.md").read_text()
+        check("stable: 更新到发布 tag", state(home3).get("last_result") == "已更新" and "rel-1" in rule3
+              and state(home3).get("version") == "v0.1.0", str(state(home3)))
+        check("stable: tag 之后的提交不会发布", "after-rel-1" not in rule3 and git(src3, "rev-parse", "HEAD") == t1)
+        updater(home3, now=True)
+        check("stable: 已在最新 tag", state(home3).get("last_result") == "已是最新", str(state(home3)))
+        t2 = publish("rel-2")
+        git(dev, "tag", "-a", "v0.2.0", "-m", "v0.2.0"); git(dev, "push", "-q", "origin", "v0.2.0")
+        git(dev, "tag", "-a", "v0.10.0", "-m", "x", t1); git(dev, "tag", "v0.3.0-rc1", t2)   # semver order, rc ignored
+        git(dev, "push", "-q", "origin", "v0.10.0", "v0.3.0-rc1")
+        updater(home3, now=True)
+        check("stable: 按语义版本取最高（v0.10.0 > v0.2.0），已包含则视为最新",
+              state(home3).get("last_result") in {"已是最新", "已更新"} and git(src3, "rev-parse", "HEAD") in {t1, t2}, str(state(home3)))
+        git(dev, "tag", "-d", "v0.10.0"); sh("git", "-C", str(dev), "push", "-q", "origin", ":refs/tags/v0.10.0")
+        sh("git", "-C", str(src3), "tag", "-d", "v0.10.0")
+        updater(home3, now=True)
+        check("stable: 新的发布 tag 被应用", "rel-2" in (home3 / "rules/dev-spec/01-core.md").read_text()
+              and git(src3, "rev-parse", "HEAD") == t2, str(state(home3)))
+        evil = publish("moved-tag")
+        git(dev, "tag", "-f", "-a", "v0.2.0", "-m", "moved", evil)
+        sh("git", "-C", str(dev), "push", "-q", "-f", "origin", "v0.2.0")
+        updater(home3, now=True)
+        check("stable: 被移动的发布 tag 不会被跟随", "moved-tag" not in (home3 / "rules/dev-spec/01-core.md").read_text()
+              and git(src3, "rev-parse", "HEAD") == t2, str(state(home3)))
 
         # unreachable source
         m2 = json.loads((home2 / ".dev-spec-manifest.json").read_text())

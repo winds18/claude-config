@@ -3,9 +3,11 @@
 
 Order of operations — the new version is validated *before* anything live changes:
   1. throttle (default 6h) and a lock, so concurrent sessions don't race;
-  2. `git fetch` the source repo recorded in the install manifest;
-  3. skip unless it is a clean fast-forward of the tracked branch (never touches a dirty
-     repo, local unpushed commits, a diverged history or another branch);
+  2. `git fetch` the source repo recorded in the install manifest and pick the target:
+     channel "stable" (default) = the highest release tag vX.Y.Z; channel "main" = the tracked branch;
+  3. skip unless the target is a clean fast-forward of the local branch (never touches a dirty
+     repo, local unpushed commits, a diverged history or another branch); a local branch that
+     already contains the target counts as up to date;
   4. optionally require the new tip to carry a valid signature;
   5. check the new tip out into a temporary worktree and run its validation suite there;
   6. only if that passes: `merge --ff-only`, then re-run the installer with the options
@@ -20,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -110,6 +113,19 @@ def run(force: bool, verbose: bool) -> int:
         shutil.rmtree(LOCK, ignore_errors=True)
 
 
+SEMVER_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def latest_release_tag(repo: Path) -> str:
+    """Highest vX.Y.Z tag (pre-release / malformed tags are ignored)."""
+    tags = [t for t in out(repo, "tag", "--list", "v*").splitlines() if SEMVER_TAG.match(t)]
+    return max(tags, key=lambda t: tuple(int(x) for x in SEMVER_TAG.match(t).groups()), default="")
+
+
+def describe(repo: Path) -> str:
+    return out(repo, "describe", "--tags", "--always", "--match", "v[0-9]*") or out(repo, "rev-parse", "--short", "HEAD")
+
+
 def update(manifest: dict, opts: dict, verbose: bool) -> int:
     repo = Path(manifest.get("source", ""))
     if not (repo / ".git").exists():
@@ -118,18 +134,28 @@ def update(manifest: dict, opts: dict, verbose: bool) -> int:
     upstream = out(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     if not branch or not upstream:
         return finish("跳过：规范仓库不在有上游的分支上", verbose)
-    fetch = git(repo, "fetch", "--quiet", upstream.split("/", 1)[0], timeout=60)
+    channel = opts.get("update_channel", "stable")
+    fetch = git(repo, "fetch", "--quiet", "--tags", upstream.split("/", 1)[0], timeout=60)
     if fetch.returncode != 0:
         return finish(f"跳过：fetch 失败（{fetch.stderr.strip()[:200]}）", verbose)
-    local, remote = out(repo, "rev-parse", "HEAD"), out(repo, "rev-parse", "@{u}")
-    if local == remote:
-        return finish("已是最新", verbose, version=local[:10])
+    local = out(repo, "rev-parse", "HEAD")
+    if channel == "main":
+        label, remote = upstream, out(repo, "rev-parse", "@{u}")
+    else:
+        label = latest_release_tag(repo)
+        if not label:
+            return finish("跳过：还没有发布 tag（vX.Y.Z）", verbose, channel=channel)
+        remote = out(repo, "rev-parse", f"{label}^{{commit}}")
+    if git(repo, "merge-base", "--is-ancestor", remote, local).returncode == 0:
+        return finish("已是最新", verbose, version=describe(repo), channel=channel)
     if git(repo, "merge-base", "--is-ancestor", local, remote).returncode != 0:
         return finish("跳过：本地有未推送的提交或历史已分叉，不自动更新", verbose, local=local[:10], remote=remote[:10])
     if out(repo, "status", "--porcelain", "--untracked-files=no"):
         return finish("跳过：规范仓库有未提交改动", verbose, local=local[:10], remote=remote[:10])
-    if opts.get("update_require_signed") and git(repo, "verify-commit", remote).returncode != 0:
-        return finish("拒绝：新版本提交没有有效签名", verbose, remote=remote[:10])
+    if opts.get("update_require_signed"):
+        verify = git(repo, "verify-tag", label) if channel != "main" else git(repo, "verify-commit", remote)
+        if verify.returncode != 0:
+            return finish("拒绝：新版本没有有效签名", verbose, target=label)
 
     # validate the candidate in an isolated checkout before anything live changes
     tmp = Path(tempfile.mkdtemp(prefix="dev-spec-candidate-"))
@@ -160,7 +186,7 @@ def update(manifest: dict, opts: dict, verbose: bool) -> int:
         git(repo, "reset", "--quiet", "--keep", local)
         return finish("失败：安装新版本出错，已回退源仓库", verbose,
                       install_tail=(inst.stdout + inst.stderr).strip().splitlines()[-8:])
-    return finish("已更新", verbose, previous=local[:10], version=remote[:10], updated_at=now())
+    return finish("已更新", verbose, previous=local[:10], version=describe(repo), channel=channel, updated_at=now())
 
 
 def main() -> int:

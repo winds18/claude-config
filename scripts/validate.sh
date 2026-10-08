@@ -6,7 +6,7 @@
 #                                               # 无法归类的改动或无法取得改动时跑全量（映射见 validate.py select_groups）
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-all_groups="guard parallel integrate workflow self_update dispatch validate install"
+all_groups="guard parallel integrate workflow self_update dispatch release validate install"
 mode=all base=HEAD
 case "${1:-}" in
   "") ;;
@@ -116,6 +116,7 @@ group integrate "集成脚本测试（真实 git worktree）" python3 "$root/scr
 group workflow "workflow 脚本测试（模拟运行时）" run_workflow_tests
 group self_update "自我更新端到端测试（bare origin + copy/link 安装）" python3 "$root/scripts/test_self_update.py"
 group dispatch "dispatch 测试" run_dispatch_tests
+group release "发布闸门测试（bare origin + 模拟 gh）" python3 "$root/scripts/test_release.py"
 group validate "静态检查自测（注入坏引用、增量映射）" python3 "$root/scripts/test_validate.py"
 group install "安装往返（复制 / 软链接）" install_roundtrips
 
