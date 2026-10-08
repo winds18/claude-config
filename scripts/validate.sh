@@ -1,26 +1,45 @@
 #!/usr/bin/env bash
 # 完整校验：静态检查 + 守卫行为测试 + 临时目录安装/卸载往返（复制与软链接两种模式）。
 # 不触碰真实 ~/.claude。
+#   bash scripts/validate.sh                    # 全量
+#   bash scripts/validate.sh --changed [<base>] # 静态检查 + 相对 base（默认 HEAD，含未提交/未跟踪）受影响的测试组；
+#                                               # 无法归类的改动或无法取得改动时跑全量（映射见 validate.py select_groups）
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+all_groups="guard parallel integrate workflow self_update dispatch validate install"
+mode=all base=HEAD
+case "${1:-}" in
+  "") ;;
+  --changed) mode=changed; base="${2:-HEAD}"; [[ $# -le 2 ]] || { echo "用法: validate.sh [--changed [<base>]]" >&2; exit 2; } ;;
+  *) echo "用法: validate.sh [--changed [<base>]]" >&2; exit 2 ;;
+esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail() { echo "  FAIL $*" >&2; exit 1; }
 
-echo "[1/8] 静态检查"
+echo "[static] 静态检查（含交叉引用）"
 python3 "$root/scripts/validate.py"
 
-echo "[2/8] 守卫行为测试"
-python3 "$root/scripts/test_policy_guard.py"
+if [[ $mode == changed ]]; then
+  sel="$(python3 "$root/scripts/validate.py" --changed-groups "$base")"
+  [[ "$sel" == all ]] && sel="$all_groups"
+else
+  sel="$all_groups"
+fi
+ran="" skipped=""
+want() { [[ " $sel " == *" $1 "* ]]; }
+# group <名称> <说明> <命令…>：被选中则运行，否则记为跳过
+group() {
+  local name="$1" label="$2"; shift 2
+  if want "$name"; then echo "[$name] $label"; "$@"; ran="$ran $name"; else skipped="$skipped $name"; fi
+}
 
-echo "[3/8] 并行守卫测试（真实 git worktree）"
-python3 "$root/scripts/test_parallel_guards.py"
-
-echo "[4/8] 集成脚本测试（真实 git worktree）"
-python3 "$root/scripts/test_integrate.py"
-
-echo "[5/8] workflow 脚本测试（模拟运行时）"
-if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
+run_workflow_tests() {
+  if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
+}
+run_dispatch_tests() {
+  if [[ -f "$root/scripts/test_dispatch.py" ]]; then python3 "$root/scripts/test_dispatch.py"; else echo "  跳过：scripts/test_dispatch.py 不存在"; fi
+}
 
 # 构造一个"已有用户配置"的 home
 seed() {
@@ -86,11 +105,20 @@ PY
   echo "  $mode 模式: 通过"
 }
 
-echo "[6/8] 自我更新端到端测试（bare origin + copy/link 安装）"
-python3 "$root/scripts/test_self_update.py"
+install_roundtrips() {
+  echo "  复制模式"; roundtrip copy
+  echo "  软链接模式"; roundtrip link
+}
 
-echo "[7/8] 安装往返：复制模式"
-roundtrip copy
-echo "[8/8] 安装往返：软链接模式"
-roundtrip link
-echo "全部校验通过"
+group guard "守卫行为测试" python3 "$root/scripts/test_policy_guard.py"
+group parallel "并行守卫测试（真实 git worktree）" python3 "$root/scripts/test_parallel_guards.py"
+group integrate "集成脚本测试（真实 git worktree）" python3 "$root/scripts/test_integrate.py"
+group workflow "workflow 脚本测试（模拟运行时）" run_workflow_tests
+group self_update "自我更新端到端测试（bare origin + copy/link 安装）" python3 "$root/scripts/test_self_update.py"
+group dispatch "dispatch 测试" run_dispatch_tests
+group validate "静态检查自测（注入坏引用、增量映射）" python3 "$root/scripts/test_validate.py"
+group install "安装往返（复制 / 软链接）" install_roundtrips
+
+echo "已运行: static${ran}"
+echo "已跳过:${skipped:- 无}"
+if [[ $mode == all || "$sel" == "$all_groups" ]]; then echo "全部校验通过"; else echo "增量校验通过（相对 ${base}）"; fi
