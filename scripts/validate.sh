@@ -7,19 +7,19 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail() { echo "  FAIL $*" >&2; exit 1; }
 
-echo "[1/7] 静态检查"
+echo "[1/8] 静态检查"
 python3 "$root/scripts/validate.py"
 
-echo "[2/7] 守卫行为测试"
+echo "[2/8] 守卫行为测试"
 python3 "$root/scripts/test_policy_guard.py"
 
-echo "[3/7] 并行守卫测试（真实 git worktree）"
+echo "[3/8] 并行守卫测试（真实 git worktree）"
 python3 "$root/scripts/test_parallel_guards.py"
 
-echo "[4/7] 集成脚本测试（真实 git worktree）"
+echo "[4/8] 集成脚本测试（真实 git worktree）"
 python3 "$root/scripts/test_integrate.py"
 
-echo "[5/7] workflow 脚本测试（模拟运行时）"
+echo "[5/8] workflow 脚本测试（模拟运行时）"
 if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
 
 # 构造一个"已有用户配置"的 home
@@ -86,8 +86,11 @@ PY
   echo "  $mode 模式: 通过"
 }
 
-echo "[6/7] 安装往返：复制模式"
+echo "[6/8] 自我更新端到端测试（bare origin + copy/link 安装）"
+python3 "$root/scripts/test_self_update.py"
+
+echo "[7/8] 安装往返：复制模式"
 roundtrip copy
-echo "[7/7] 安装往返：软链接模式"
+echo "[8/8] 安装往返：软链接模式"
 roundtrip link
 echo "全部校验通过"

@@ -25,6 +25,7 @@ workflows/                  dynamic workflow，安装为 /命令
 agents/                     子代理：implementer、reviewer、security-reviewer、test-triager
 hooks/
   policy-guard.py           PreToolUse：高危删除、危险 git、绕过权限、密钥提交、worktree 派发检查
+  dev_spec_update.py        SessionStart（异步）：校验后静默自我更新
   worktree-guard.py         implementer 专用：归属声明（含基线校验）、越界拦截、结束前提交核验
   hooks.json                守卫的 settings 片段
 scripts/                    安装器（link/copy/doctor/uninstall）、validate.sh 与各项测试
@@ -59,11 +60,13 @@ cd claude-config && bash install.sh --copy --manage-claude-md --retire-legacy-ru
 | `--manage-claude-md` | 接管 `~/.claude/CLAUDE.md`，旧文件备份；不加则仅在不存在时写入 |
 | `--retire-legacy-rules` | 把 `~/.claude/rules/` 下除 `dev-spec` 外的旧规则移入备份 |
 | `--force` | 同名但非本规范管理的条目（如你自己的同名技能）备份后替换；默认跳过并提示 |
-| `--no-hooks` | 不安装 / 移除 PreToolUse 守卫 |
+| `--no-hooks` / `--hooks` | 关闭 / 重新开启 PreToolUse 守卫（选择会被记住） |
+| `--no-auto-update` | 关闭自动更新（见下文） |
 | `--claude-home <dir>` | 安装到其他配置目录 |
 
 - 所有被替换或退役的内容移入 `~/.claude/dev-spec-backups/<时间>/`，并记入 `~/.claude/.dev-spec-manifest.json`。
-- `settings.json` 只增删 dev-spec 守卫这一条，其他内容保留。
+- `settings.json` 只增删 dev-spec 管理的两条 hook（守卫、自动更新）与缺省的 `worktree.baseRef`，其他内容保留。
+- 不带 `--link`/`--copy` 重装时沿用上次的模式与选项。
 - 守卫命令在脚本缺失时放行（exit 0）：软链接模式下外接盘未挂载不会阻断所有工具调用，但此时规范整体失效，`doctor` 会报告。
 
 ```bash
@@ -75,6 +78,27 @@ bash install.sh uninstall --apply
 ```
 
 `doctor` 检查 CLI 版本、规范源是否可达、软链接是否失效、复制件是否落后于源、守卫条目是否在位。卸载按清单删除组件、恢复被替换的文件与旧规则、移除守卫条目；备份目录保留供人工确认。
+
+## 自动更新
+
+安装后默认开启。每次会话启动时，一个异步 `SessionStart` hook 在后台检查更新（默认最多每 6 小时一次），不拖慢启动、不打扰对话：
+
+1. `git fetch` 安装时记录的规范仓库；
+2. 只接受**干净的 fast-forward**：仓库有未提交改动、有未推送的本地提交、历史分叉或不在跟踪分支上时一律跳过（不会碰你正在开发的内容）；
+3. 把新版本检出到临时 worktree，跑完整的 `scripts/validate.sh`，**不通过就保持当前版本**；
+4. 通过后 fast-forward 并按安装时记住的选项重装；重装失败则把源仓库退回原版本。
+
+| 命令 / 选项 | 作用 |
+| --- | --- |
+| `bash install.sh update` | 立即检查并更新，输出过程 |
+| `bash install.sh doctor` | 查看最近一次检查的时间、结果与版本 |
+| `--no-auto-update` / `--auto-update` | 关闭 / 重新开启（选择会被记住） |
+| `--require-signed` | 只接受带有效签名的提交（需配置 `git verify-commit` 可用的签名） |
+| `DEV_SPEC_UPDATE_INTERVAL_HOURS` | 环境变量，覆盖检查间隔 |
+
+结果写入 `~/.claude/dev-spec-update.json`，过程追加到 `~/.claude/dev-spec-update.log`。新规则从下一个会话起生效，技能、hook、workflow 即时生效。退役旧规则这类一次性迁移不会在更新时重复执行。
+
+安全提示：自动更新会在每台设备上执行仓库里的 hook 代码，等同于信任该仓库的所有推送者。建议给 `main` 开启分支保护；对安全要求高的设备使用 `--require-signed`。
 
 ## 在项目中使用
 
@@ -124,6 +148,6 @@ dynamic workflow 需在 `/config` 中开启（部分计划默认关闭）；不�
 bash scripts/validate.sh
 ```
 
-校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
+校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
 
 修改原则：常驻规则只放跨任务硬原则，流程细节进技能且只维护一处；新增约束要在 `docs/incidents.md` 或 `docs/design.md` 中有依据。

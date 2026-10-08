@@ -27,6 +27,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent
 MANIFEST = ".dev-spec-manifest.json"
 HOOK_MARK = "dev-spec/policy-guard.py"
+UPDATE_MARK = "dev-spec/dev_spec_update.py"
 MIN_VERSION = (2, 1, 212)   # isolation: worktree, worktree.baseRef, effort, agent hooks
 
 
@@ -75,24 +76,55 @@ def claude_version() -> tuple[int, ...] | None:
     return tuple(int(x) for x in m.groups()) if m else None
 
 
-def hook_command(home: Path) -> str:
-    script = home / "hooks/dev-spec/policy-guard.py"
+def script_command(home: Path, name: str) -> str:
+    script = home / "hooks/dev-spec" / name
     if home.resolve() == (Path.home() / ".claude").resolve():
-        path = '"$HOME/.claude/hooks/dev-spec/policy-guard.py"'
+        path = f'"$HOME/.claude/hooks/dev-spec/{name}"'
     else:
         path = shlex.quote(str(script))
-    # Missing script (e.g. unmounted source volume) must not exit 2, which would block every tool call.
+    # Missing script (e.g. unmounted source volume) must exit 0: exit 2 from PreToolUse would block every tool call.
     return f"f={path}; [ -f \"$f\" ] || exit 0; exec python3 \"$f\""
 
 
 def hook_group(home: Path) -> dict:
     group = json.loads((SRC / "hooks/hooks.json").read_text())["hooks"]["PreToolUse"][0]
-    group["hooks"][0]["command"] = hook_command(home)
+    group["hooks"][0]["command"] = script_command(home, "policy-guard.py")
     return group
 
 
-def is_our_group(g: dict) -> bool:
-    return any(HOOK_MARK in h.get("command", "") for h in g.get("hooks", []))
+def update_group(home: Path) -> dict:
+    return {"hooks": [{"type": "command", "command": script_command(home, "dev_spec_update.py"),
+                       "async": True, "timeout": 900, "statusMessage": "dev-spec 自动更新检查"}]}
+
+
+# (event, marker in command) for every hook entry this installer manages
+MANAGED_HOOKS = [("PreToolUse", HOOK_MARK), ("SessionStart", UPDATE_MARK)]
+
+
+def desired_hooks(home: Path, opts: dict) -> dict[str, dict | None]:
+    return {"PreToolUse": None if opts.get("no_hooks") else hook_group(home),
+            "SessionStart": update_group(home) if opts.get("auto_update") else None}
+
+
+def is_ours(g: dict, mark: str) -> bool:
+    return any(mark in h.get("command", "") for h in g.get("hooks", []))
+
+
+def apply_hooks(settings: dict, want: dict[str, dict | None]) -> dict:
+    """Return a copy of settings where each managed event holds exactly the desired dev-spec group (or none)."""
+    s = json.loads(json.dumps(settings))
+    hooks = s.setdefault("hooks", {})
+    for event, mark in MANAGED_HOOKS:
+        groups = [g for g in hooks.get(event, []) if not is_ours(g, mark)]
+        if want.get(event) is not None:
+            groups.append(want[event])
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
+    if not hooks:
+        s.pop("hooks")
+    return s
 
 
 # ---------- plan ----------
@@ -119,13 +151,21 @@ def state_of(dst: Path, src: Path, mode: str) -> str:
 # ---------- install ----------
 
 def install(home: Path, a: argparse.Namespace) -> int:
-    mode = "link" if a.link else "copy"
     old = load_json(home / MANIFEST)
+    mode = "link" if a.link else "copy" if a.copy else old.get("mode", "copy")
+    prev_opts = old.get("options", {})
+    opts = {
+        "no_hooks": a.no_hooks if a.no_hooks else prev_opts.get("no_hooks", False) if not a.hooks else False,
+        "auto_update": (False if a.no_auto_update else True if a.auto_update else prev_opts.get("auto_update", True)),
+        "update_require_signed": a.require_signed or prev_opts.get("update_require_signed", False),
+        "update_interval_hours": prev_opts.get("update_interval_hours", 6),
+    }
     owned = {e["path"]: e for e in old.get("entries", [])}
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup_root = home / "dev-spec-backups" / stamp
     manifest = {"version": 2, "mode": mode, "source": str(SRC), "installed_at": stamp,
                 "entries": [], "retired": dict(old.get("retired", {})),
+                "options": opts,
                 "settings_hook": old.get("settings_hook", False),
                 "worktree_head": old.get("worktree_head", False)}
     steps: list[tuple[str, str, Path, Path, bool]] = []   # (label, rel, src, dst, backup_needed)
@@ -161,10 +201,8 @@ def install(home: Path, a: argparse.Namespace) -> int:
 
     settings_path = home / "settings.json"
     settings = load_json(settings_path)
-    groups = settings.get("hooks", {}).get("PreToolUse", [])
-    want = hook_group(home)
-    hook_ok = any(g == want for g in groups)
-    hook_change = not a.no_hooks and not hook_ok
+    new_settings = apply_hooks(settings, desired_hooks(home, opts))
+    hook_change = new_settings != settings
     # worktree subagents must branch from local HEAD to see contract checkpoints; set only if the user has no value
     set_wt_head = "baseRef" not in (settings.get("worktree") or {})
 
@@ -175,8 +213,8 @@ def install(home: Path, a: argparse.Namespace) -> int:
         print(f"  冲突跳过   {rel}（已存在且非本规范管理；--force 备份后替换）")
     for p in retire:
         print(f"  退役旧规则 rules/{p.name} → 备份")
-    if not a.no_hooks:
-        print(f"  settings.json: {'合并/更新 PreToolUse 守卫' if hook_change else '守卫已是最新'}")
+    print(f"  settings.json: hooks {'更新' if hook_change else '已是最新'}"
+          f"（守卫{'关' if opts['no_hooks'] else '开'}，自动更新{'开' if opts['auto_update'] else '关'}）")
     wt_now = (settings.get("worktree") or {}).get("baseRef")
     print(f"  settings.json: worktree.baseRef {'设为 head' if set_wt_head else f'保持用户值 {wt_now!r}'}")
     stale = [r for r in owned if r not in {e['path'] for e in manifest['entries']} and r not in conflicts]
@@ -223,23 +261,13 @@ def install(home: Path, a: argparse.Namespace) -> int:
         backup_root.mkdir(parents=True, exist_ok=True)
         if not (backup_root / "settings.json").exists():
             shutil.copy2(settings_path, backup_root / "settings.json")
+    if hook_change:
+        settings = new_settings
     if set_wt_head:
         settings.setdefault("worktree", {})["baseRef"] = "head"
         manifest["worktree_head"] = True
-    if hook_change:
-        hooks = settings.setdefault("hooks", {})
-        hooks["PreToolUse"] = [g for g in hooks.get("PreToolUse", []) if not is_our_group(g)] + [want]
-        manifest["settings_hook"] = True
-    elif a.no_hooks and manifest["settings_hook"]:
-        hooks = settings.get("hooks", {})
-        kept = [g for g in hooks.get("PreToolUse", []) if not is_our_group(g)]
-        hooks["PreToolUse"] = kept
-        if not kept:
-            hooks.pop("PreToolUse", None)
-            if not hooks:
-                settings.pop("hooks", None)
-        manifest["settings_hook"] = False
-    if hook_change or set_wt_head or (a.no_hooks and old.get("settings_hook")):
+    manifest["settings_hook"] = True     # managed hooks are tracked by marker; uninstall removes them
+    if hook_change or set_wt_head:
         write_json(settings_path, settings)
 
     write_json(home / MANIFEST, manifest)
@@ -249,15 +277,7 @@ def install(home: Path, a: argparse.Namespace) -> int:
 
 def drop_hook(settings_path: Path) -> None:
     s = load_json(settings_path)
-    groups = s.get("hooks", {}).get("PreToolUse", [])
-    kept = [g for g in groups if not is_our_group(g)]
-    if kept:
-        s["hooks"]["PreToolUse"] = kept
-    elif "hooks" in s:
-        s["hooks"].pop("PreToolUse", None)
-        if not s["hooks"]:
-            s.pop("hooks")
-    write_json(settings_path, s)
+    write_json(settings_path, apply_hooks(s, {event: None for event, _ in MANAGED_HOOKS}))
 
 
 # ---------- uninstall ----------
@@ -272,7 +292,7 @@ def uninstall(home: Path, apply: bool) -> int:
     for rel in m.get("retired", {}):
         print(f"  恢复旧规则 {rel}")
     if m.get("settings_hook"):
-        print("  settings.json: 移除 dev-spec 守卫")
+        print("  settings.json: 移除 dev-spec 守卫与自动更新 hook")
     if m.get("worktree_head"):
         print("  settings.json: 移除安装器设置的 worktree.baseRef")
     if not apply:
@@ -304,6 +324,9 @@ def uninstall(home: Path, apply: bool) -> int:
         p = home / d
         if p.is_dir() and not any(x for x in p.iterdir() if x.name != ".DS_Store"):
             shutil.rmtree(p)
+    for name in ("dev-spec-update.json", "dev-spec-update.log"):
+        (home / name).unlink(missing_ok=True)
+    shutil.rmtree(home / ".dev-spec-update.lock", ignore_errors=True)
     (home / MANIFEST).unlink()
     print("\n卸载完成。备份目录 dev-spec-backups/ 保留，确认无误后可手动删除。")
     return 0
@@ -344,10 +367,18 @@ def doctor(home: Path, check_version: bool) -> int:
             print(f"  问题 {e['path']} 缺失"); problems += 1
         elif src and not same_tree(src, p):
             print(f"  提示 {e['path']} 与源不同（重新 --apply 同步）")
-    if m.get("settings_hook"):
-        groups = load_json(home / "settings.json").get("hooks", {}).get("PreToolUse", [])
-        if hook_group(home) not in groups:
-            print("  问题 settings.json 守卫条目缺失或过期"); problems += 1
+    settings = load_json(home / "settings.json")
+    if apply_hooks(settings, desired_hooks(home, m.get("options", {}))) != settings:
+        print("  问题 settings.json 中 dev-spec hooks 缺失或过期（重新 --apply）"); problems += 1
+    opts = m.get("options", {})
+    state = load_json(home / "dev-spec-update.json")
+    if opts.get("auto_update"):
+        print(f"  自动更新 开（间隔 {opts.get('update_interval_hours', 6)}h）；最近检查 {state.get('last_check', '从未')}："
+              f"{state.get('last_result', '-')}{'，版本 ' + state['version'] if state.get('version') else ''}")
+        if str(state.get("last_result", "")).startswith(("拒绝", "失败")):
+            print("  提示 最近一次自动更新未成功，详见 dev-spec-update.log")
+    else:
+        print("  自动更新 关")
     print("doctor:", "正常" if not problems else f"{problems} 个问题")
     return 1 if problems else 0
 
@@ -363,7 +394,11 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="同名且非本规范管理的条目备份后替换")
     ap.add_argument("--manage-claude-md", action="store_true", help="由本规范接管 ~/.claude/CLAUDE.md（旧文件备份）")
     ap.add_argument("--retire-legacy-rules", action="store_true", help="把 rules/ 下其他旧规则移入备份")
-    ap.add_argument("--no-hooks", action="store_true", help="不安装 PreToolUse 守卫")
+    ap.add_argument("--no-hooks", action="store_true", help="不安装 PreToolUse 守卫（记住该选择）")
+    ap.add_argument("--hooks", action="store_true", help="重新启用 PreToolUse 守卫")
+    ap.add_argument("--auto-update", action="store_true", help="开启自动更新（默认开启并记住选择）")
+    ap.add_argument("--no-auto-update", action="store_true", help="关闭自动更新")
+    ap.add_argument("--require-signed", action="store_true", help="自动更新只接受有有效签名的提交")
     ap.add_argument("--skip-version-check", action="store_true")
     ap.add_argument("--claude-home", default=os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
     a = ap.parse_args()

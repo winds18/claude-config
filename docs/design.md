@@ -69,4 +69,5 @@
 | `# Compact instructions` 与 `integrate.py status` | 预防性：长任务压缩后最易丢失归属与证据（源自 codex-config 的续接条款）；状态优先从 git 恢复而非依赖摘要 |
 | PR 与 CI（`dev-workflow` §7） | 规范此前止于本地提交（自审）；PR Steward 标签检查来自 CLI 内置约定，避免与其他代理争抢同一 PR |
 | 从失误中学习（`01-core`） | 本会话的失误只修当下、未沉淀（自审）；新增规则须有依据以防膨胀 |
+| 自我更新（`hooks/dev_spec_update.py`） | 用户要求"新规范推送后自主静默更新"。因为更新内容会以 hook 形式在每台设备执行，设计为"先在隔离 checkout 跑完整校验、再 fast-forward、失败回退"，且永不覆盖本地未提交/未推送的工作；一次性迁移（退役旧规则）不随更新重复 |
 
