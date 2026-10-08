@@ -38,7 +38,7 @@ run_workflow_tests() {
   if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
 }
 run_dispatch_tests() {
-  if [[ -f "$root/scripts/test_dispatch.py" ]]; then python3 "$root/scripts/test_dispatch.py"; else echo "  跳过：scripts/test_dispatch.py 不存在"; fi
+  python3 "$root/scripts/test_dispatch.py"   # 缺失即失败：文件已入库，兜底只会掩盖测试被删
 }
 
 # 构造一个"已有用户配置"的 home
@@ -121,4 +121,6 @@ group install "安装往返（复制 / 软链接）" install_roundtrips
 
 echo "已运行: static${ran}"
 echo "已跳过:${skipped:- 无}"
-if [[ $mode == all || "$sel" == "$all_groups" ]]; then echo "全部校验通过"; else echo "增量校验通过（相对 ${base}）"; fi
+if [[ $mode == all || "$sel" == "$all_groups" ]]; then echo "全部校验通过"
+elif [[ -z "$sel" ]]; then echo "相对 ${base} 无受影响的测试组：只运行了静态检查（不等于已验证功能；提交前跑全量）"
+else echo "增量校验通过（相对 ${base}）；提交前与发布前仍需全量"; fi

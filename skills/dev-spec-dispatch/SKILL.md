@@ -13,10 +13,11 @@ argument-hint: "[check|prepare|review-args] <计划文件或 --range>"
 
 计划文件放会话 scratchpad，不进仓库。两种格式等价。
 
-Markdown（`负责`/`禁止`/`验收` 多项用 `;` 或 `，` 分隔，空单元格写 `-`）：
+Markdown（`负责`/`禁止`/`验收` 多项用 `;`、`,` 或 `，` 分隔；含分隔符或 `|` 的命令整条放进反引号，或把 `|` 写成 `\|`；空单元格写 `-`；每行列数必须与表头一致）：
 
 ```markdown
 契约: src/types/order.ts#Order
+用例设计: 是
 
 | 包名 | 目标 | 负责 | 禁止 | 验收 | 准备 | 资源 | effort |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -37,7 +38,7 @@ JSON（与 `/dev-spec-implement` args 同构，`base` 可省略，由 `prepare` 
 }
 ```
 
-可选字段 `notes`（关键约束）；`effort` 取 low/medium/high/xhigh/max，核心逻辑包不填（继承会话）。
+可选字段 `notes`（关键约束）；`effort` 取 low/medium/high/xhigh/max，核心逻辑包不填（继承会话）。顶层可选 `case_design`（Markdown 写 `用例设计: 否`）：关闭对抗用例阶段，仅限纯机械改动。其他未知顶层字段会报错，避免静默丢失。
 
 ## 2. 校验
 
@@ -48,9 +49,9 @@ JSON（与 `/dev-spec-implement` args 同构，`base` 可省略，由 `prepare` 
 `dispatch.py prepare <计划> --commit --out <scratchpad>/args.json`
 
 1. 再次校验计划；
-2. `--commit`：工作区有改动时 `git add -A` 并提交检查点（默认消息 `chore: 并行派发检查点`，`--message` 可改）。在 main/master 上拒绝提交，先建任务分支；确需提交到默认分支才加 `--allow-default-branch`；
+2. `--commit`：工作区有改动时 `git add -A` 并提交检查点（默认消息 `chore: 并行派发检查点`，`--message` 可改），并列出提交了哪些文件。在 main/master 上拒绝提交，先建任务分支；确需提交到默认分支才加 `--allow-default-branch`。提交在脚本内进行、守卫看不到，所以脚本自己用守卫的检测器扫描暂存内容：疑似密钥、找不到守卫或提交失败（如 pre-commit 拒绝）时都不提交并恢复原暂存区；`--skip-secret-scan` 仅在确认安全后使用；
 3. 运行 `parallel-dev` 的 `integrate.py preflight --base HEAD`，有阻塞则原样列出并退出 2，不生成 args；
-4. 输出 args：`base` 为当前 HEAD 完整 SHA，`contract` 与 `packages` 透传（Markdown 转为同构 JSON）。
+4. 输出 args：`base` 为当前 HEAD 完整 SHA，`contract`、`packages`、`case_design` 透传（Markdown 转为同构 JSON）。
 
 ## 4. 派发
 
@@ -62,12 +63,12 @@ JSON（与 `/dev-spec-implement` args 同构，`base` 可省略，由 `prepare` 
 
 `dispatch.py review-args --range <检查点>..HEAD`
 
-输出 `/dev-spec-review` 的 args：`range`、`lenses`、`finder_effort`，并附 `reasons`（每个视角的入选理由）与 `stats`。规则：
+输出 `/dev-spec-review` 的 args：`range`、`lenses`、`finder_effort`，并附 `reasons`（每个视角的入选理由）、`notes` 与 `stats`。规则（路径按词匹配，不做子串匹配）：
 
 - 始终含 `correctness`、`tests`；
-- 改动涉及类型/接口/schema/api/proto/openapi 目录或文件，或跨 ≥3 个顶层目录 → `contract`；
-- 路径命中 auth、login、session、token、secret、credential、crypto、permission、acl、payment、upload、sql、query、exec、shell、hook、.env → `security`；
-- 改动 >300 行，或路径命中 db、query、cache、index、batch、worker、perf → `performance`；
+- 目录名或文件名（去扩展名）是 types/interfaces/schema/api/proto/openapi/contract 等，或 `.proto/.d.ts/.graphql`，或跨 ≥3 个顶层目录 → `contract`；
+- 路径词命中 auth/login/session/token/secret/credential/crypto/permission/acl/oauth/jwt/password/payment/upload/sql 等，或 `.env*` 文件，**或新增代码命中鉴权、凭证、命令执行、反序列化、请求输入等关键词** → `security`；未选时 `notes` 会提醒人工确认；
+- 改动 >300 行，或路径词命中 db/query/cache/batch/worker/perf/migration（`index.*` 入口文件不算）→ `performance`；
 - 总改动 <400 行 `finder_effort` 为 `medium`，否则 `high`。
 
-理由不成立时可手动增删视角；只处理复核结果中的 `confirmed`。
+规则是启发式：理由不成立或 `notes` 提示的情况存在时手动增删视角；只处理复核结果中的 `confirmed`。

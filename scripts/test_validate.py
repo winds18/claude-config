@@ -150,20 +150,37 @@ def test_clean_and_valid_refs(tmp: Path) -> None:
     check("docs/incidents.md 历史叙述豁免", r.returncode == 0, r.stdout[-600:])
 
 
+def test_regex_regressions(tmp: Path) -> None:
+    # flags after a shell operator belong to the next command, not to the integrate subcommand
+    repo = copy_repo(tmp, "ops")
+    append(repo, "docs/design.md", "\n- `integrate.py apply wt-a --verify \"pytest\" && git push --force`\n")
+    r = run_validate(repo)
+    check("回归: && 之后的参数不记到子命令名下", r.returncode == 0, r.stdout[-600:])
+    # a skill name immediately followed by CJK text is still parsed as a section reference
+    for i, text in enumerate(("parallel-dev技能§9", "`parallel-dev`的§9")):
+        repo = copy_repo(tmp, f"cjk{i}")
+        line = append(repo, "docs/design.md", f"\n- 见 {text}\n")
+        r = run_validate(repo)
+        check(f"回归: 识别「{text}」并报不存在的章节", r.returncode != 0 and "§9" in r.stdout, r.stdout[-600:])
+
+
 def test_select_groups() -> None:
     v = load_validate()
     sel = v.select_groups
     cases = [
         ([], []),
-        (["README.md", "docs/design.md", "agents/reviewer.md", "global/CLAUDE.md", "skills/dev-workflow/SKILL.md"], []),
-        (["hooks/policy-guard.py"], ["guard", "parallel"]),
+        (["README.md", "docs/design.md"], []),
+        (["agents/reviewer.md"], ["validate", "install"]),
+        (["global/CLAUDE.md"], ["self_update", "install"]),
+        (["skills/dev-workflow/SKILL.md"], ["validate"]),
+        (["hooks/policy-guard.py"], ["guard", "parallel", "dispatch"]),
         (["hooks/worktree-guard.py"], ["parallel", "integrate"]),
-        (["skills/parallel-dev/scripts/integrate.py"], ["integrate"]),
-        (["workflows/dev-spec-review.js"], ["workflow"]),
-        (["scripts/test_workflows.mjs"], ["workflow"]),
+        (["skills/parallel-dev/scripts/integrate.py"], ["integrate", "dispatch", "validate"]),
+        (["workflows/dev-spec-review.js"], ["workflow", "dispatch", "validate"]),
+        (["scripts/test_workflows.mjs"], ["workflow", "dispatch"]),
         (["hooks/dev_spec_update.py"], ["self_update", "install"]),
-        (["scripts/dev_spec_install.py"], ["self_update", "install"]),
-        (["install.sh"], ["self_update", "install"]),
+        (["scripts/dev_spec_install.py"], ["self_update", "validate", "install"]),
+        (["install.sh"], ["self_update", "validate", "install"]),
         (["skills/dev-spec-dispatch/SKILL.md"], ["dispatch"]),
         (["skills/dev-spec-dispatch/scripts/x.py"], ["dispatch"]),
         (["scripts/test_dispatch.py"], ["dispatch"]),
@@ -173,7 +190,8 @@ def test_select_groups() -> None:
         (["scripts/test_self_update.py"], ["self_update"]),
         (["scripts/validate.py"], ["validate"]),
         (["scripts/test_validate.py"], ["validate"]),
-        (["hooks/worktree-guard.py", "workflows/dev-spec-implement.js", "README.md"], ["parallel", "integrate", "workflow"]),
+        (["hooks/worktree-guard.py", "workflows/dev-spec-implement.js", "README.md"],
+         ["parallel", "integrate", "workflow", "dispatch", "validate"]),
         ([".gitignore"], None),
         (["scripts/validate.sh"], None),
         (["README.md", "skills/parallel-dev/scripts/new_tool.py"], None),
@@ -181,6 +199,30 @@ def test_select_groups() -> None:
     for files, want in cases:
         got = sel(files)
         check(f"映射 {files} → {want}", got == want, f"实际 {got}")
+
+    # Derived, not hand-listed: every repo file a test script references must select that test's group,
+    # so a new cross-file dependency cannot silently fall out of `--changed` (avoids a shared wrong assumption).
+    test_group = {"scripts/test_policy_guard.py": "guard", "scripts/test_parallel_guards.py": "parallel",
+                  "scripts/test_integrate.py": "integrate", "scripts/test_workflows.mjs": "workflow",
+                  "scripts/test_self_update.py": "self_update", "scripts/test_dispatch.py": "dispatch",
+                  "scripts/test_validate.py": "validate"}
+    tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split())
+    tracked |= {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts
+                and ".claude" not in p.parts and "__pycache__" not in p.parts}
+    missing = []
+    for test, group in test_group.items():
+        # only path-constructing code lines (ROOT/repo/src joins, copies, subprocess args); skip comments and docstrings
+        src = (ROOT / test).read_text()
+        src = re.sub(r'"""[\s\S]*?"""', "", src)
+        code = [l for l in src.splitlines() if not l.strip().startswith(("#", "//"))
+                and re.search(r"\b(ROOT|root|SRC_\w*|GUARD|TOOL|HOOKS)\b\s*/|join\(ROOT|copy\w*\(|readFileSync|load\(", l)]
+        for ref in sorted(set(re.findall(r"[\w./-]+\.(?:py|js|mjs|sh|json|md)", "\n".join(code)))):
+            ref = ref.lstrip("./")
+            if ref in tracked and ref != test:
+                got = sel([ref])
+                if got is not None and group not in got:
+                    missing.append(f"{ref} → 缺 {group}（{test} 引用了它）")
+    check("映射覆盖测试脚本实际引用的全部文件（推导式）", not missing, "; ".join(missing))
 
 
 def test_changed_git(tmp: Path) -> None:
@@ -229,6 +271,7 @@ def main() -> int:
         tmp = Path(os.path.realpath(t))
         test_clean_and_valid_refs(tmp)
         test_injections(tmp)
+        test_regex_regressions(tmp)
         test_select_groups()
         test_changed_git(tmp)
     failed = [r for r in results if not r[1]]

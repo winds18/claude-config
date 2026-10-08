@@ -44,6 +44,7 @@ const CASES = {
   properties: {
     cases: {
       type: 'array',
+      maxItems: 12,
       items: {
         type: 'object',
         required: ['priority', 'name', 'given', 'when', 'then', 'prevents'],
@@ -93,7 +94,7 @@ function prefixOf(glob) {
 function validate(a) {
   const errors = []
   if (!a || typeof a !== 'object') throw new Error('缺少 args：需要 {base, packages}')
-  if (typeof a.base !== 'string' || !/^[0-9a-f]{7,40}$/.test(a.base)) errors.push('base 必须是契约检查点的提交 SHA')
+  if (typeof a.base !== 'string' || !/^[0-9a-f]{7,64}$/.test(a.base)) errors.push('base 必须是契约检查点的提交 SHA')
   if (!Array.isArray(a.packages) || a.packages.length === 0) errors.push('packages 不能为空')
   const names = new Set()
   for (const p of a.packages || []) {
@@ -129,8 +130,10 @@ function casePrompt(p, a) {
   ].join('\n')
 }
 
+// 硬上限：每包最多 12 条、每字段 200 字，防止用例注入让实现与复核提示失控膨胀
+const clip = v => (String(v).length > 200 ? String(v).slice(0, 200) + '…' : String(v))
 function formatCases(cases) {
-  return cases.map((c, i) => `${i + 1}. [${c.priority}] ${c.name}：${c.given} → ${c.when} → ${c.then}（防止：${c.prevents}）`).join('\n')
+  return cases.slice(0, 12).map(c => ({ ...c, name: clip(c.name), given: clip(c.given), when: clip(c.when), then: clip(c.then), prevents: clip(c.prevents) })).map((c, i) => `${i + 1}. [${c.priority}] ${c.name}：${c.given} → ${c.when} → ${c.then}（防止：${c.prevents}）`).join('\n')
 }
 
 function implementPrompt(p, a, cases) {

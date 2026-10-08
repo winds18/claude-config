@@ -80,6 +80,8 @@ def make_repo(tmp: Path) -> tuple[Path, Path]:
     shutil.copytree(SRC_DISPATCH, skills / "dev-spec-dispatch", ignore=shutil.ignore_patterns("__pycache__"))
     (skills / "parallel-dev/scripts").mkdir(parents=True)
     shutil.copy(SRC_INTEGRATE, skills / "parallel-dev/scripts/integrate.py")
+    (tmp / "hooks/dev-spec").mkdir(parents=True)          # copy-install layout: <home>/hooks/dev-spec/policy-guard.py
+    shutil.copy(ROOT / "hooks/policy-guard.py", tmp / "hooks/dev-spec/policy-guard.py")
     repo = tmp / "repo"
     repo.mkdir()
     return repo, skills / "dev-spec-dispatch/scripts/dispatch.py"
@@ -223,6 +225,111 @@ def main() -> int:
         commit({"a/x.py": "1\n", "b/y.py": "2\n", "c/z.py": "3\n"}, "spread")
         r = review(f"{s4}..HEAD")
         check("≥3 个顶层目录加 contract", "contract" in r.get("lenses", []), json.dumps(r, ensure_ascii=False))
+
+        # ---------- 回归：第三轮复核发现 ----------
+        node = shutil.which("node")
+        wf_test = ROOT / "scripts/test_workflows.mjs"
+
+        def wf_validate(args: dict) -> dict:
+            f = tmp / "wf-args.json"
+            f.write_text(json.dumps(args))
+            r = subprocess.run([node, str(wf_test), "--validate-args", str(f)], capture_output=True, text=True)
+            return json.loads(r.stdout or "{}")
+
+        def plan_file(obj, name="p.json") -> Path:
+            f = tmp / name
+            f.write_text(obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False))
+            return f
+
+        two = {"packages": [{"name": "a", "goal": "g", "owned": ["src/a/**"], "verify": ["t"]},
+                            {"name": "b", "goal": "g", "owned": ["src/b/**"], "verify": ["t"]}]}
+
+        # 1. 提交检查点前做密钥扫描；失败时恢复原暂存区
+        g("switch", "-q", "task")
+        (repo / "staged.txt").write_text("keep staged\n"); g("add", "staged.txt")
+        (repo / "leak.env").write_text("AWS=" + "AKIA" + "QWERTYUIOPASDFGH" + "\n")
+        before = g("rev-parse", "HEAD")
+        p = run("prepare", str(plan_file(two)), "--commit")
+        check("回归: 检查点含密钥时拒绝提交", p.returncode == 2 and "密钥" in p.stderr and g("rev-parse", "HEAD") == before, p.stderr)
+        st = g("status", "--porcelain")
+        check("回归: 拒绝后恢复原暂存区", "A  staged.txt" in st and "?? leak.env" in st, st)
+        (repo / "leak.env").unlink()
+        hook = repo / ".git/hooks/pre-commit"
+        hook.write_text("#!/bin/sh\nexit 1\n"); hook.chmod(0o755)
+        p = run("prepare", str(plan_file(two)), "--commit")
+        st = g("status", "--porcelain")
+        check("回归: 提交失败（pre-commit）时恢复暂存区", p.returncode == 2 and "已恢复原暂存区" in p.stderr and "A  staged.txt" in st, p.stderr + st)
+        hook.unlink()
+        shutil.move(str(tmp / "hooks"), str(tmp / "hooks.off"))
+        p = run("prepare", str(plan_file(two)), "--commit")
+        check("回归: 找不到守卫时拒绝提交（fail closed）", p.returncode == 2 and "skip-secret-scan" in p.stderr and g("rev-parse", "HEAD") == before, p.stderr)
+        shutil.move(str(tmp / "hooks.off"), str(tmp / "hooks"))
+        p = run("prepare", str(plan_file(two)), "--commit")
+        check("回归: 干净内容正常提交检查点", p.returncode == 0 and g("rev-parse", "HEAD") != before and "staged.txt" in p.stderr, p.stderr)
+
+        # 2. case_design 透传；未知顶层字段与错误类型报错
+        p = run("prepare", str(plan_file({**two, "case_design": False})))
+        args = json.loads(p.stdout or "{}")
+        check("回归: case_design 透传到 args", p.returncode == 0 and args.get("case_design") is False, p.stdout + p.stderr)
+        p = run("check", str(plan_file({**two, "case_design": "no"})), "--json")
+        check("回归: case_design 非布尔报错", p.returncode == 2, p.stdout)
+        p = run("check", str(plan_file({**two, "casedesign": False})), "--json")
+        check("回归: 未知顶层字段报错", p.returncode == 2 and "未知的顶层字段" in p.stdout, p.stdout)
+        p = run("check", str(plan_file({"packages": [{"name": ["x"], "goal": "g", "owned": ["a/**"], "verify": ["t"]}]})), "--json")
+        check("回归: name 非字符串时报错而非崩溃", p.returncode == 2 and "Traceback" not in p.stderr, p.stdout + p.stderr)
+
+        # 3. Markdown：代码段内的分隔符、ASCII 逗号、未转义 |、残留反引号、用例设计开关
+        hdr = "| 包名 | 目标 | 负责 | 验收 |\n| --- | --- | --- | --- |\n"
+        p = run("prepare", str(plan_file(hdr + "| a | g | `src/api/**`, `src/types/**` | `cd web; pnpm test` |\n"
+                                         "| b | g | src/types/** | t |\n", "m1.md")))
+        check("回归: ASCII 逗号分隔且重叠被发现", p.returncode == 2 and "归属重叠" in p.stderr, p.stderr)
+        p = run("prepare", str(plan_file(hdr + "| a | g | `src/api/**` | `cd web; pnpm test`; `pytest -q \\| tail -5` |\n"
+                                         "用例设计: 否\n", "m2.md")))
+        args = json.loads(p.stdout or "{}")
+        verify = args.get("packages", [{}])[0].get("verify")
+        check("回归: 代码段内的 ; 不拆分、\\| 保留", verify == ["cd web; pnpm test", "pytest -q | tail -5"], str(verify) + p.stderr)
+        check("回归: Markdown 用例设计开关", args.get("case_design") is False, json.dumps(args, ensure_ascii=False))
+        p = run("check", str(plan_file(hdr + "| a | g | src/a/** | pytest -q | tail -5 |\n", "m3.md")), "--json")
+        check("回归: 未转义 | 导致列数不符时报错", p.returncode == 2 and "列" in p.stdout, p.stdout)
+        p = run("check", str(plan_file(hdr + "| a | g | src/a/** | `pytest` -q |\n", "m4.md")), "--json")
+        check("回归: 残留反引号报错", p.returncode == 2 and "反引号" in p.stdout, p.stdout)
+
+        # 4. 跨语言契约：prepare 的真实输出与重叠用例交给 workflow 的真实校验
+        if node:
+            p = run("prepare", str(plan_file({**two, "contract": "src/types.ts", "case_design": False})))
+            v = wf_validate(json.loads(p.stdout))
+            check("契约: prepare 输出被 workflow 接受且 case_design 生效", v.get("ok") and v.get("case_design_calls") == 0, str(v))
+            cases = [("./src/api/**", "src/api/**"), ("src/a?i/**", "src/abi/**"), ("src/api*", "src/apix/**"),
+                     ("./src/**", "src/web/**"), ("src/a/**", "src/ab/**"), ("docs/x.md", "docs/x.md/y")]
+            mism = []
+            for g1, g2 in cases:
+                plan = {"packages": [{"name": "a", "goal": "g", "owned": [g1], "verify": ["t"]},
+                                     {"name": "b", "goal": "g", "owned": [g2], "verify": ["t"]}]}
+                py = run("check", str(plan_file(plan)), "--json").returncode == 2
+                js = not wf_validate({**plan, "base": "a" * 40}).get("ok")
+                if py != js:
+                    mism.append((g1, g2, py, js))
+            check("契约: Python 与 workflow 的重叠判定逐例一致", not mism, str(mism))
+            v = wf_validate({**two, "base": "b" * 64})
+            check("回归: workflow 接受 SHA-256 基线", v.get("ok"), str(v))
+        else:
+            check("契约测试需要 node（未安装时跳过会掩盖问题）", False, "node 不可用")
+
+        # 5. review-args：内容触发 security、路径按词匹配、文件名 stem 判 contract、未选 security 时提示
+        b0 = g("rev-parse", "HEAD")
+        commit({"src/middleware/guard.ts": "if (!req.headers.authorization) throw new Error()\n"}, "guard")
+        r = review(f"{b0}..HEAD")
+        check("回归: 新增代码命中鉴权关键词时加 security", "security" in r.get("lenses", []), json.dumps(r, ensure_ascii=False))
+        b1 = g("rev-parse", "HEAD")
+        commit({"src/hooks/useCounter.ts": "export const useCounter = () => 1\n", "src/components/index.ts": "export {}\n"}, "ui")
+        r = review(f"{b1}..HEAD")
+        check("回归: React hooks 与 index.ts 不误加 security/performance",
+              "security" not in r.get("lenses", []) and "performance" not in r.get("lenses", []) and r.get("notes"),
+              json.dumps(r, ensure_ascii=False))
+        b2 = g("rev-parse", "HEAD")
+        commit({"src/types.ts": "export type X = 1\n"}, "types file")
+        r = review(f"{b2}..HEAD")
+        check("回归: 文件名 types.ts 判为 contract", "contract" in r.get("lenses", []), json.dumps(r, ensure_ascii=False))
 
         p = run("review-args", "--range", "nosuchref..HEAD")
         check("无效范围退出 2", p.returncode == 2 and not p.stdout.strip(), p.stdout + p.stderr)

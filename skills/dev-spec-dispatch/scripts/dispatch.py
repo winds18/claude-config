@@ -59,24 +59,44 @@ def out(*args: str) -> str:
 
 # ---------- plan loading ----------
 
+def split_outside_code(text: str, seps: str) -> list[str]:
+    """Split on any char in `seps` that is outside `code spans` and not backslash-escaped."""
+    parts, cur, in_code, i = [], "", False, 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text) and text[i + 1] in seps:
+            cur += text[i + 1]; i += 2; continue
+        if c == "`":
+            in_code = not in_code
+        if c in seps and not in_code:
+            parts.append(cur); cur = ""
+        else:
+            cur += c
+        i += 1
+    parts.append(cur)
+    return parts
+
+
 def split_row(line: str) -> list[str]:
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
     if s.endswith("|") and not s.endswith("\\|"):
         s = s[:-1]
-    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", s)]
+    return [c.strip() for c in split_outside_code(s, "|")]
 
 
 def clean(cell: str) -> str:
     c = cell.strip()
-    if len(c) >= 2 and c[0] == c[-1] == "`":
+    if len(c) >= 2 and c[0] == c[-1] == "`" and c.count("`") == 2:
         c = c[1:-1].strip()
+    if "`" in c:
+        raise PlanError(f"单元格条目残留反引号：{cell.strip()!r}（每个条目单独用一对反引号包住，或不用反引号）")
     return "" if c in EMPTY_CELL else c
 
 
 def split_items(cell: str) -> list[str]:
-    return [i for i in (clean(x) for x in re.split(r"[;；，]", cell)) if i]
+    return [i for i in (clean(x) for x in split_outside_code(cell, ";；，,")) if i]
 
 
 def parse_markdown(text: str) -> dict:
@@ -84,6 +104,12 @@ def parse_markdown(text: str) -> dict:
     m = re.search(r"^\s*(?:[-*]\s*)?(?:契约|contract)\s*[:：]\s*(.+?)\s*$", text, re.M | re.I)
     if m and clean(m.group(1)):
         plan["contract"] = clean(m.group(1))
+    m = re.search(r"^\s*(?:[-*]\s*)?(?:用例设计|case_design)\s*[:：]\s*(\S+)\s*$", text, re.M | re.I)
+    if m:
+        v = m.group(1).strip().lower()
+        if v not in {"是", "否", "true", "false", "yes", "no", "开", "关"}:
+            raise PlanError(f"用例设计 只能是 是/否：{m.group(1)!r}")
+        plan["case_design"] = v in {"是", "true", "yes", "开"}
     lines = text.splitlines()
     i = 0
     while i < len(lines):
@@ -98,6 +124,8 @@ def parse_markdown(text: str) -> dict:
         i += 2
         while i < len(lines) and lines[i].lstrip().startswith("|"):
             cells = split_row(lines[i])
+            if len(cells) != len(header):
+                raise PlanError(f"第 {i + 1} 行有 {len(cells)} 列，表头 {len(header)} 列：单元格里的 | 需写成 \\| 或放进反引号")
             pkg: dict = {}
             for key, cell in zip(header, cells):
                 if not key:
@@ -167,6 +195,9 @@ def validate(plan: dict) -> dict:
         if not isinstance(p, dict):
             errors.append(f"第 {idx + 1} 个包不是对象")
             continue
+        if p.get("name") is not None and not isinstance(p.get("name"), str):
+            errors.append(f"第 {idx + 1} 个包的 name 必须是字符串")
+            continue
         n = p.get("name") or f"#{idx + 1}"
         if not p.get("name") or p.get("name") in names:
             errors.append(f"包名缺失或重复：{p.get('name') or f'第 {idx + 1} 个包'}")
@@ -201,6 +232,11 @@ def validate(plan: dict) -> dict:
                         hints.append(f"{a.get('name')} 负责 {g1}，而 {b.get('name')} 禁止 {g2}：确认这是有意分工")
     if plan.get("contract") is not None and not isinstance(plan.get("contract"), str):
         errors.append("contract 必须是字符串")
+    if "case_design" in plan and not isinstance(plan["case_design"], bool):
+        errors.append("case_design 必须是 true/false")
+    unknown = set(plan) - {"base", "contract", "packages", "case_design"}
+    if unknown:
+        errors.append(f"未知的顶层字段：{', '.join(sorted(unknown))}（不会传给 workflow）")
     return {"ok": not errors, "errors": errors, "hints": hints, "packages": len(pkgs)}
 
 
@@ -210,7 +246,33 @@ def normalized_args(plan: dict, base: str) -> dict:
     if plan.get("contract"):
         args["contract"] = plan["contract"]
     args["packages"] = [{k: p[k] for k in keys if k in p and p[k] not in (None, "", [])} for p in plan["packages"]]
+    if "case_design" in plan:
+        args["case_design"] = plan["case_design"]
     return args
+
+
+GUARD_CANDIDATES = (
+    Path(__file__).resolve().parents[3] / "hooks" / "policy-guard.py",          # repo checkout / link install
+    Path(__file__).absolute().parents[3] / "hooks" / "dev-spec" / "policy-guard.py",  # copy install (~/.claude)
+)
+
+
+def scan_staged() -> str | None:
+    """Secret scan of staged added lines with the dev-spec guard's detectors. Fails closed."""
+    guard = next((c for c in GUARD_CANDIDATES if c.is_file()), None)
+    if guard is None:
+        return "找不到 dev-spec 守卫（policy-guard.py），无法做提交前密钥扫描；确认安全后可加 --skip-secret-scan"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dev_spec_policy_guard", guard)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    diff = out("diff", "--cached", "--no-color", "-U0", "--no-renames")
+    added = [l[1:] for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
+    high, generic = mod.find_secrets(added)
+    if high or generic:
+        what = ", ".join(high) if high else f"疑似硬编码凭证 {len(generic)} 处（例：{generic[0]}）"
+        return f"检查点中疑似包含密钥：{what}。已恢复暂存区、未提交；移除后重试（确认是假数据时在该行注明 dev-spec: allow-secret）"
+    return None
 
 
 # ---------- commands ----------
@@ -260,11 +322,25 @@ def cmd_prepare(a) -> int:
         if name in DEFAULT_BRANCHES and not a.allow_default_branch:
             return fail(f"当前在默认分支 {name}：先建任务分支（git switch -c <task>）再提交检查点，"
                         "确需在默认分支提交时加 --allow-default-branch")
+        saved_index = out("write-tree")              # restore the user's staging if anything below fails
+        restore = lambda: git("read-tree", saved_index) if saved_index else git("reset", "-q")
         add = git("add", "-A", "--", ":/", WT_EXCLUDE)  # never stage linked worktrees as gitlinks
-        commit = git("commit", "-q", "-m", a.message) if add.returncode == 0 else add
+        if add.returncode != 0:
+            restore()
+            return fail(f"暂存失败：{(add.stdout + add.stderr).strip()}")
+        staged = out("diff", "--cached", "--name-only", "--no-renames").splitlines()
+        if not a.skip_secret_scan:
+            # this commit runs inside python, so the PreToolUse guard never sees a `git commit`: scan here
+            problem = scan_staged()
+            if problem:
+                restore()
+                return fail(problem)
+        commit = git("commit", "-q", "-m", a.message)
         if commit.returncode != 0:
-            return fail(f"提交检查点失败：{(commit.stdout + commit.stderr).strip()}")
-        print(f"已提交检查点 {out('rev-parse', '--short', 'HEAD')} 到 {name}", file=sys.stderr)
+            restore()
+            return fail(f"提交检查点失败，已恢复原暂存区：{(commit.stdout + commit.stderr).strip() or 'git commit 非零退出（检查 pre-commit hook）'}")
+        print(f"已提交检查点 {out('rev-parse', '--short', 'HEAD')} 到 {name}（{len(staged)} 个文件："
+              f"{', '.join(staged[:8])}{' …' if len(staged) > 8 else ''}）", file=sys.stderr)
     head = out("rev-parse", "HEAD")
     if not head:
         return fail("仓库还没有提交，无法确定基线")
@@ -290,12 +366,29 @@ def cmd_prepare(a) -> int:
     return 0
 
 
-SECURITY_RX = re.compile(r"auth|login|session|token|secret|credential|crypto|permission|acl|payment|upload"
-                         r"|sql|query|exec|shell|hook|\.env", re.I)
-PERF_RX = re.compile(r"db|query|cache|index|batch|worker|perf", re.I)
+SECURITY_TOKENS = {"auth", "authn", "authz", "authentication", "authorization", "login", "logout", "signin",
+                   "session", "sessions", "token", "tokens", "secret", "secrets", "credential", "credentials",
+                   "crypto", "permission", "permissions", "acl", "rbac", "oauth", "jwt", "password", "passwords",
+                   "payment", "payments", "billing", "upload", "uploads", "sql", "sanitize", "csrf", "cors"}
+SECURITY_CONTENT_RX = re.compile(
+    r"\b(?:password|passwd|secret|credential|api[_-]?key|access[_-]?token|jwt|oauth|csrf|permission|authoriz\w*|"
+    r"authenticat\w*|is_admin|role|acl|subprocess|os\.system|shell\s*=\s*True|eval\(|exec\(|pickle\.loads|"
+    r"yaml\.load\(|innerHTML|dangerouslySetInnerHTML|request\.(?:args|form|json|files)|req\.(?:body|query|params)|"
+    r"raw\s*sql|execute\(|cursor\.)", re.I)
+PERF_TOKENS = {"db", "database", "query", "queries", "cache", "caching", "batch", "worker", "workers", "perf",
+               "performance", "index", "indexes", "migration", "migrations"}
+PERF_SKIP_INDEX = {"index"}       # bare index.ts / index.md are entry files, not database indexes
 CONTRACT_DIRS = {"type", "types", "typings", "interface", "interfaces", "schema", "schemas", "api", "apis",
                  "proto", "protos", "openapi", "contract", "contracts"}
 CONTRACT_FILE_RX = re.compile(r"\.proto$|\.d\.ts$|\.graphql$|schema|openapi|swagger", re.I)
+
+
+def path_tokens(path: str) -> set[str]:
+    return {t for t in re.split(r"[/._\-]+", path.lower()) if t}
+
+
+def stem(path: str) -> str:
+    return path.rsplit("/", 1)[-1].split(".", 1)[0].lower()
 
 
 def review_args(range_: str) -> dict:
@@ -315,15 +408,23 @@ def review_args(range_: str) -> dict:
     tops = sorted({f.split("/", 1)[0] for f in files if "/" in f})
     reasons = {"correctness": "始终包含", "tests": "始终包含"}
     contract_hits = [f for f in files if CONTRACT_DIRS & {s.lower() for s in f.split("/")[:-1]}
-                     or CONTRACT_FILE_RX.search(f.rsplit("/", 1)[-1])]
+                     or stem(f) in CONTRACT_DIRS or CONTRACT_FILE_RX.search(f.rsplit("/", 1)[-1])]
     if contract_hits:
         reasons["contract"] = f"涉及接口/类型/schema：{', '.join(contract_hits[:3])}"
     elif len(tops) >= 3:
         reasons["contract"] = f"跨 {len(tops)} 个顶层目录：{', '.join(tops[:5])}"
-    sec = [f for f in files if SECURITY_RX.search(f)]
+    sec = [f for f in files if path_tokens(f) & SECURITY_TOKENS or f.rsplit("/", 1)[-1].startswith(".env")]
+    diff = git("diff", "--no-color", "-U0", "--no-renames", rng).stdout
+    sec_lines = [l[1:].strip() for l in diff.splitlines()
+                 if l.startswith("+") and not l.startswith("+++") and SECURITY_CONTENT_RX.search(l)]
+    notes = []
     if sec:
         reasons["security"] = f"路径命中敏感关键词：{', '.join(sec[:3])}"
-    perf = [f for f in files if PERF_RX.search(f)]
+    elif sec_lines:
+        reasons["security"] = f"新增代码命中敏感关键词 {len(sec_lines)} 处（例：{sec_lines[0][:60]}）"
+    else:
+        notes.append("未选 security：仅基于路径与新增行关键词判断；改动涉及鉴权、外部输入或敏感数据时请手动加入")
+    perf = [f for f in files if (path_tokens(f) - (PERF_SKIP_INDEX if stem(f) == "index" else set())) & PERF_TOKENS]
     if total > 300:
         reasons["performance"] = f"改动 {total} 行 > 300"
     elif perf:
@@ -334,6 +435,7 @@ def review_args(range_: str) -> dict:
         "lenses": [l for l in order if l in reasons],
         "finder_effort": "medium" if total < 400 else "high",
         "reasons": reasons,
+        "notes": notes,
         "stats": {"files": len(files), "added": added, "deleted": deleted, "top_dirs": tops},
     }
 
@@ -361,6 +463,7 @@ def main() -> int:
     p.add_argument("--message", default="chore: 并行派发检查点")
     p.add_argument("--allow-default-branch", action="store_true")
     p.add_argument("--out", help="args JSON 写入的文件（默认 stdout）")
+    p.add_argument("--skip-secret-scan", action="store_true", help="跳过检查点提交前的密钥扫描（确认安全后才用）")
     r = sub.add_parser("review-args", help="按改动规模生成 /dev-spec-review args")
     r.add_argument("--range", required=True, help="A..B 或 A（等价 A..HEAD）")
     a = ap.parse_args()

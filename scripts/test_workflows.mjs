@@ -221,6 +221,17 @@ async function testReview() {
   check('review: 运行时只传 prev 时结果不变', !strictR.error && strictR.value.confirmed.length === 1, strictR.error && strictR.error.message)
 }
 
+// --validate-args <file>: run the real dev-spec-implement validation on a JSON args file (used by test_dispatch.py
+// to check producer/consumer agreement across languages). Prints {"ok": bool, "error": string|null}.
+if (process.argv[2] === '--validate-args') {
+  const args = JSON.parse(readFileSync(process.argv[3], 'utf8'))
+  const ok = { status: 'done', branch: 'b', sha: 's', files: [], checks: [], unverified: [], contract_issues: [] }
+  const r = await run(load('dev-spec-implement.js'), args, (p, o) => (o.agentType === 'reviewer' ? { verdict: 'pass', findings: [] }
+    : o.agentType === 'case-designer' ? { cases: [] } : ok))
+  console.log(JSON.stringify({ ok: !r.error, error: r.error ? r.error.message : null, case_design_calls: r.calls.filter(c => c.opts.agentType === 'case-designer').length }))
+  process.exit(0)
+}
+
 await testImplement()
 await testReview()
 const names = readdirSync(join(ROOT, 'workflows')).filter(f => f.endsWith('.js'))
