@@ -1,0 +1,27 @@
+# 最小 CI 模板：只填 project-bootstrap 步骤 2 中实际验证通过的命令；删除不适用的步骤。
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # - uses: actions/setup-node@v4        # 按技术栈选择并固定版本
+      #   with: { node-version: "20", cache: "pnpm" }
+      - name: Install
+        run: <安装命令，如 pnpm install --frozen-lockfile>
+      - name: Lint / type check
+        run: <类型检查与 lint 命令>
+      - name: Test
+        run: <测试命令>
+      - name: Build
+        run: <构建命令；没有则删除>

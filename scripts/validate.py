@@ -397,7 +397,7 @@ def check_cross_refs() -> None:
 # ---------- 增量校验：改动 → 测试组 ----------
 
 # validate.sh 中测试组的规范顺序；static 总是运行，不在此列
-GROUPS = ("guard", "parallel", "integrate", "workflow", "self_update", "dispatch", "validate", "install")
+GROUPS = ("guard", "parallel", "integrate", "workflow", "self_update", "dispatch", "release", "validate", "install")
 # 规则按"生产者 → 所有消费它的测试"列出（含跨语言与跨脚本的消费者），先具体后宽泛，命中第一条即停。
 # 漏选比多选危险：--changed 报绿而全量失败等于假绿（见 docs/incidents.md 第三轮复核）。
 _RULES: list[tuple[str, tuple[str, ...]]] = [
@@ -414,6 +414,8 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
     (r"scripts/test_parallel_guards\.py", ("parallel",)),
     (r"scripts/test_integrate\.py", ("integrate",)),
     (r"scripts/test_self_update\.py", ("self_update",)),
+    (r"scripts/release\.py|scripts/test_release\.py", ("release",)),
+    (r"\.github/workflows/.*", ()),                                           # CI 定义：静态检查（YAML）即可，CI 自身会运行全量
     (r"scripts/validate\.py|scripts/test_validate\.py", ("validate",)),
     (r"global/.*", ("install", "self_update")),                                # 安装往返与自更新测试写死了其中文件与内容
     (r"agents/.*", ("install", "validate")),                                   # 安装往返检查 implementer；validate 校验子代理类型

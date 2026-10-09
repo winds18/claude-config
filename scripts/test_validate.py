@@ -205,7 +205,7 @@ def test_select_groups() -> None:
     test_group = {"scripts/test_policy_guard.py": "guard", "scripts/test_parallel_guards.py": "parallel",
                   "scripts/test_integrate.py": "integrate", "scripts/test_workflows.mjs": "workflow",
                   "scripts/test_self_update.py": "self_update", "scripts/test_dispatch.py": "dispatch",
-                  "scripts/test_validate.py": "validate"}
+                  "scripts/test_validate.py": "validate", "scripts/test_release.py": "release"}
     tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split())
     tracked |= {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts
                 and ".claude" not in p.parts and "__pycache__" not in p.parts}

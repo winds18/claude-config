@@ -148,6 +148,12 @@ def state_of(dst: Path, src: Path, mode: str) -> str:
     return "same" if not dst.is_symlink() and dst.exists() and same_tree(src, dst) else "differs"
 
 
+def source_version() -> str:
+    p = subprocess.run(["git", "-C", str(SRC), "describe", "--tags", "--always", "--dirty", "--match", "v[0-9]*"],
+                       capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 else "unknown"
+
+
 # ---------- install ----------
 
 def install(home: Path, a: argparse.Namespace) -> int:
@@ -159,11 +165,13 @@ def install(home: Path, a: argparse.Namespace) -> int:
         "auto_update": (False if a.no_auto_update else True if a.auto_update else prev_opts.get("auto_update", True)),
         "update_require_signed": a.require_signed or prev_opts.get("update_require_signed", False),
         "update_interval_hours": prev_opts.get("update_interval_hours", 6),
+        "update_channel": a.channel or prev_opts.get("update_channel", "stable"),
     }
     owned = {e["path"]: e for e in old.get("entries", [])}
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup_root = home / "dev-spec-backups" / stamp
     manifest = {"version": 2, "mode": mode, "source": str(SRC), "installed_at": stamp,
+                "spec_version": source_version(),
                 "entries": [], "retired": dict(old.get("retired", {})),
                 "options": opts,
                 "settings_hook": old.get("settings_hook", False),
@@ -372,8 +380,9 @@ def doctor(home: Path, check_version: bool) -> int:
         print("  问题 settings.json 中 dev-spec hooks 缺失或过期（重新 --apply）"); problems += 1
     opts = m.get("options", {})
     state = load_json(home / "dev-spec-update.json")
+    print(f"  版本 {m.get('spec_version', 'unknown')}（安装时）；当前源 {source_version()}")
     if opts.get("auto_update"):
-        print(f"  自动更新 开（间隔 {opts.get('update_interval_hours', 6)}h）；最近检查 {state.get('last_check', '从未')}："
+        print(f"  自动更新 开（通道 {opts.get('update_channel', 'stable')}，间隔 {opts.get('update_interval_hours', 6)}h）；最近检查 {state.get('last_check', '从未')}："
               f"{state.get('last_result', '-')}{'，版本 ' + state['version'] if state.get('version') else ''}")
         if str(state.get("last_result", "")).startswith(("拒绝", "失败")):
             print("  提示 最近一次自动更新未成功，详见 dev-spec-update.log")
@@ -398,7 +407,8 @@ def main() -> int:
     ap.add_argument("--hooks", action="store_true", help="重新启用 PreToolUse 守卫")
     ap.add_argument("--auto-update", action="store_true", help="开启自动更新（默认开启并记住选择）")
     ap.add_argument("--no-auto-update", action="store_true", help="关闭自动更新")
-    ap.add_argument("--require-signed", action="store_true", help="自动更新只接受有有效签名的提交")
+    ap.add_argument("--require-signed", action="store_true", help="自动更新只接受有有效签名的提交/tag")
+    ap.add_argument("--channel", choices=["stable", "main"], help="自动更新通道：stable=发布 tag（默认），main=跟随主分支")
     ap.add_argument("--skip-version-check", action="store_true")
     ap.add_argument("--claude-home", default=os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
     a = ap.parse_args()

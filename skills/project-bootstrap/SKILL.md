@@ -21,9 +21,10 @@ disable-model-invocation: true
    - 可选：格式化/lint 的 PostToolUse hook，代理团队的 TaskCompleted 验收 hook（只在用户需要时启用）。
 5. **`.worktreeinclude`**：列出 worktree 需要的 gitignored 文件（如 `.env.local`）。不要列入真实生产密钥。
 6. **`.gitignore`**：加入 `.claude/worktrees/`、`.claude/settings.local.json`、`CLAUDE.local.md`、`.tmp/`（按需）。
-7. **效率插件与过滤（可选）**：类型语言项目建议安装对应的代码智能插件（LSP），用"跳转定义"代替 grep + 多文件读取，编辑后自动报告类型错误；测试输出很长的项目可加一个 PreToolUse hook，用 `updatedInput` 把测试命令改写为只输出失败部分（示例见官方 costs 文档）。
-8. **路径规则（可选）**：前后端或多语言仓库，把仅适用于某些路径的约定写进 `.claude/rules/<topic>.md` 并加 `paths:` frontmatter，而不是塞进根 CLAUDE.md。
-9. **汇报**：列出新建/修改的文件、验证过的命令及结果、未能验证的部分。不自动提交。
+7. **CI（项目没有时）**：参照 [templates/ci-github.yml](templates/ci-github.yml) 生成最小 CI，只放步骤 2 中验证通过的命令；会话内验证通过不代表合入时仍通过。已有 CI 时只核对其命令与 CLAUDE.md 一致。
+8. **效率插件与过滤（可选）**：类型语言项目建议安装对应的代码智能插件（LSP），用"跳转定义"代替 grep + 多文件读取，编辑后自动报告类型错误；测试输出很长的项目可加一个 PreToolUse hook，用 `updatedInput` 把测试命令改写为只输出失败部分（示例见官方 costs 文档）。
+9. **路径规则（可选）**：前后端或多语言仓库，把仅适用于某些路径的约定写进 `.claude/rules/<topic>.md` 并加 `paths:` frontmatter，而不是塞进根 CLAUDE.md。
+10. **汇报**：列出新建/修改的文件、验证过的命令及结果、未能验证的部分。不自动提交。
 
 ## 不做
 
