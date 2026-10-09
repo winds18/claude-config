@@ -1,0 +1,10 @@
+# Actions are pinned to commit SHAs (this repo's code is auto-deployed to devices); Dependabot proposes bumps as PRs,
+# which must pass CI like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

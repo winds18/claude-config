@@ -381,6 +381,10 @@ def doctor(home: Path, check_version: bool) -> int:
     opts = m.get("options", {})
     state = load_json(home / "dev-spec-update.json")
     print(f"  版本 {m.get('spec_version', 'unknown')}（安装时）；当前源 {source_version()}")
+    rb = load_json(home / ROLLBACK_FILE)
+    if rb:
+        print(f"  已回滚到 {rb.get('tag')}（{rb.get('at')}，原 {rb.get('from_branch') or rb.get('from_sha', '')[:10]}），"
+              "自动更新关闭；恢复：bash install.sh resume")
     if opts.get("auto_update"):
         print(f"  自动更新 开（通道 {opts.get('update_channel', 'stable')}，间隔 {opts.get('update_interval_hours', 6)}h）；最近检查 {state.get('last_check', '从未')}："
               f"{state.get('last_result', '-')}{'，版本 ' + state['version'] if state.get('version') else ''}")
@@ -392,11 +396,78 @@ def doctor(home: Path, check_version: bool) -> int:
     return 1 if problems else 0
 
 
+# ---------- rollback / resume ----------
+
+ROLLBACK_FILE = "dev-spec-rollback.json"
+RELEASE_TAG = re.compile(r"^v\d+\.\d+\.\d+$")
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, env=env)
+
+
+def _reinstall(repo: Path, home: Path, mode: str, *flags: str) -> subprocess.CompletedProcess:
+    # run the installer of whatever version is now checked out (it may be older than this one)
+    return subprocess.run([sys.executable, str(repo / "scripts/dev_spec_install.py"), "install", "--apply",
+                           "--claude-home", str(home), f"--{mode}", *flags], capture_output=True, text=True)
+
+
+def rollback(home: Path, tag: str) -> int:
+    """Pin a device to an earlier release. Two independent guards keep it there: auto-update is switched
+    off with a flag every installer since v1.0.0 understands, and the updater skips a detached checkout."""
+    m = load_json(home / MANIFEST)
+    if not m:
+        return print("未安装（无清单）", file=sys.stderr) or 2
+    repo, mode = Path(m.get("source", "")), m.get("mode", "copy")
+    if mode == "link":
+        return print("link 模式（开发机）的源就是开发仓库，请直接用 git 切换版本，不做回滚", file=sys.stderr) or 2
+    if not RELEASE_TAG.match(tag):
+        return print(f"只能回滚到发布 tag（vX.Y.Z）：{tag}", file=sys.stderr) or 2
+    _git(repo, "fetch", "--quiet", "--tags", "origin")
+    if _git(repo, "rev-parse", "--verify", "-q", f"refs/tags/{tag}").returncode != 0:
+        return print(f"tag {tag} 不存在", file=sys.stderr) or 2
+    if _git(repo, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+        return print("规范源仓库有未提交改动，不回滚", file=sys.stderr) or 2
+    branch = _git(repo, "symbolic-ref", "-q", "--short", "HEAD").stdout.strip()
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if _git(repo, "checkout", "--quiet", "--detach", f"refs/tags/{tag}").returncode != 0:
+        return print(f"检出 {tag} 失败", file=sys.stderr) or 2
+    r = _reinstall(repo, home, mode, "--no-auto-update")
+    if r.returncode != 0:
+        _git(repo, "checkout", "--quiet", branch or sha)
+        _reinstall(repo, home, mode)
+        print(f"回滚失败，已恢复原版本：{(r.stdout + r.stderr).strip()[-400:]}", file=sys.stderr)
+        return 1
+    write_json(home / ROLLBACK_FILE, {"tag": tag, "from_branch": branch, "from_sha": sha,
+                                      "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+    resume = f"git -C {shlex.quote(str(repo))} switch {branch or '<分支>'} && bash {shlex.quote(str(repo / 'install.sh'))} --apply --auto-update"
+    print(f"已回滚到 {tag}，自动更新已关闭。\n恢复：bash install.sh resume（目标版本不支持时运行：{resume}）")
+    return 0
+
+
+def resume(home: Path) -> int:
+    m, info = load_json(home / MANIFEST), load_json(home / ROLLBACK_FILE)
+    if not info:
+        return print("当前没有处于回滚状态", file=sys.stderr) or 2
+    repo, mode = Path(m.get("source", "")), m.get("mode", "copy")
+    target = info.get("from_branch") or info.get("from_sha")
+    if _git(repo, "checkout", "--quiet", target).returncode != 0:
+        return print(f"切回 {target} 失败", file=sys.stderr) or 2
+    r = _reinstall(repo, home, mode, "--auto-update")
+    if r.returncode != 0:
+        return print(f"重新安装失败：{(r.stdout + r.stderr).strip()[-400:]}", file=sys.stderr) or 1
+    (home / ROLLBACK_FILE).unlink(missing_ok=True)
+    print(f"已恢复到 {target} 并重新开启自动更新；下次会话启动时按通道检查新版本")
+    return 0
+
+
 # ---------- main ----------
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="dev-spec 安装器（默认仅预览）")
-    ap.add_argument("command", nargs="?", default="install", choices=["install", "uninstall", "doctor"])
+    ap.add_argument("command", nargs="?", default="install", choices=["install", "uninstall", "doctor", "rollback", "resume"])
+    ap.add_argument("tag", nargs="?", help="rollback 的目标发布 tag（vX.Y.Z）")
     ap.add_argument("--apply", action="store_true", help="实际执行（默认只预览）")
     ap.add_argument("--link", action="store_true", help="软链接到本仓库（单一真源，修改即时生效）")
     ap.add_argument("--copy", action="store_true", help="复制文件（默认）")
@@ -419,6 +490,10 @@ def main() -> int:
 
     if a.command == "doctor":
         return doctor(home, not a.skip_version_check)
+    if a.command == "rollback":
+        return rollback(home, a.tag or "")
+    if a.command == "resume":
+        return resume(home)
     if a.command == "uninstall":
         return uninstall(home, a.apply)
     if not a.skip_version_check:

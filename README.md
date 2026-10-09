@@ -96,6 +96,8 @@ bash install.sh uninstall --apply
 | --- | --- |
 | `bash install.sh update` | 立即检查并更新，输出过程 |
 | `bash install.sh doctor` | 查看最近一次检查的时间、结果与版本 |
+| `bash install.sh rollback vX.Y.Z` | 发布出问题时把这台设备回滚到指定版本，并关闭自动更新（仅 copy 模式） |
+| `bash install.sh resume` | 结束回滚：切回原分支并重新开启自动更新 |
 | `--no-auto-update` / `--auto-update` | 关闭 / 重新开启（选择会被记住） |
 | `--channel stable` / `--channel main` | 更新通道：发布 tag（默认）/ 主分支 |
 | `--require-signed` | 只接受带有效签名的 tag（stable）或提交（main） |
