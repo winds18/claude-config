@@ -140,6 +140,11 @@ async function testImplement() {
   const caseCrash = await run(src, { base, packages: pkgs.slice(0, 1) }, (p, o) => { if (o.agentType === 'case-designer') throw new Error('x'); return impl(p, o) })
   check('implement: 用例设计失败不阻塞实现并注明', caseCrash.value && caseCrash.value.ready.length === 1 && /用例设计代理异常/.test(caseCrash.value.packages[0].case_note),
     JSON.stringify(caseCrash.value && caseCrash.value.packages[0]))
+  const lowPkg = [{ ...pkgs[1], effort: 'low' }, { ...pkgs[0], effort: undefined }]
+  const mixed = await run(src, { base, packages: lowPkg }, withCases)
+  const designed = mixed.calls.filter(c => c.opts.agentType === 'case-designer').map(c => c.opts.label)
+  check('implement: effort low 的包跳过用例设计，其余照常', designed.length === 1 && designed[0] === '用例 api', designed.join(','))
+  check('implement: 包级复核提示含相称性约束', mixed.calls.find(c => c.opts.agentType === 'reviewer').prompt.includes('不构成 fix-needed'))
   const noCase = await run(src, { base, packages: pkgs.slice(0, 1), case_design: false }, withCases)
   check('implement: case_design=false 跳过用例阶段', !noCase.calls.some(c => c.opts.agentType === 'case-designer'))
 

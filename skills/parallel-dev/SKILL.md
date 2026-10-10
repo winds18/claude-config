@@ -39,10 +39,15 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 ```
 
 - 机械性的包设 `effort: "low"/"medium"` 省成本；核心逻辑不设（继承会话）。
-- workflow 会先为每个包运行 `case-designer` 列出对抗用例，实现者先写成测试再实现，包级复核逐条核对；`case_design: false` 可关闭（仅限纯机械改动）。
+- workflow 会先为每个包运行 `case-designer` 列出对抗用例，实现者先写成测试再实现，包级复核逐条核对。相称性：`effort: "low"` 的包自动跳过用例设计，`case_design: false` 全局关闭；验收命令尽量是可直接执行的入口（`./x.sh`、`make test`），避免被 worktree 隔离拒绝。
 - 结果中 `ready` 是 done 且包级复核通过的分支，`needs_attention` 需要你处理（blocked、partial、fix-needed）。
 
-**回退：手动派发**（Workflow 不可用时）：按 [references/work-package.md](references/work-package.md) 写自包含工作包，同一消息内并发多个 `Agent(subagent_type: "implementer", isolation: "worktree", run_in_background: true)`，给每个代理起名以便 `SendMessage` 续接。
+**手动派发**（Workflow 工具不可用时——桌面端会话目前常见——按同样的三阶段进行）：
+1. 非机械性的包先各派一个 `case-designer`（只读，可并发），拿到对抗用例；
+2. 并发派 `implementer`，把用例写进工作包的"先写成测试的场景"；
+3. 每个完成的包派一个 `reviewer` 做包级复核，fix-needed 的用 `SendMessage` 交回原 implementer 修复后复审。
+
+工作包写法：按 [references/work-package.md](references/work-package.md) 写自包含工作包，同一消息内并发多个 `Agent(subagent_type: "implementer", isolation: "worktree", run_in_background: true)`，给每个代理起名以便 `SendMessage` 续接。
 
 ### Hook 强制
 
