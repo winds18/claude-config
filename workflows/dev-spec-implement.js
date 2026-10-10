@@ -163,6 +163,7 @@ function reviewPrompt(p, a, rep, cases) {
     `实现者自报的检查：${JSON.stringify(rep.checks)}；未验证面：${JSON.stringify(rep.unverified)}`,
     cases && cases.length ? `对抗用例（逐条核对是否有对应测试；缺失且未说明理由的算 fix-needed）：\n${formatCases(cases)}` : '',
     `重点：是否实现目标、是否与契约及其消费者一致、失败路径与边界、是否删测试或弱化断言、自报检查是否可信。` +
+      `严格度与包的规模相称：目标、契约与验收没有要求的属性不构成 fix-needed。` +
       `只报有触发条件的真实问题；没有问题时 verdict 为 pass、findings 为空数组。`,
   ].filter(Boolean).join('\n')
 }
@@ -175,7 +176,8 @@ const designCases = args.case_design !== false
 const results = await pipeline(
   args.packages,
   async p => {
-    if (!designCases) return { p, cases: [] }
+    // 相称性：全局关闭，或该包标为机械性改动（effort: low）时不做用例设计
+    if (!designCases || p.effort === 'low') return { p, cases: [] }
     try {
       const r = await agent(casePrompt(p, args), { agentType: 'case-designer', schema: CASES, label: `用例 ${p.name}`, phase: '用例设计', effort: 'medium' })
       return { p, cases: r ? r.cases : [], caseNote: r ? undefined : '用例设计代理未返回结果' }
