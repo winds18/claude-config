@@ -4,7 +4,8 @@
 
 - 始终使用简体中文回复。
 - 提交信息、代码注释沿用各项目约定；无约定时用中文描述 + Conventional Commits 类型前缀。
-- 长期授权：跨模块或多阶段的开发任务，我授权你按 dev-spec 的 `parallel-dev` 主动使用子代理与 dev-spec workflow 并行（含 worktree 隔离与本地检查点提交），无需每次单独请求；推送、合入默认分支、发布仍需逐次确认。
+- 长期授权：跨模块或多阶段的开发任务，我授权你按 dev-spec 的 `parallel-dev` 主动使用子代理与 dev-spec workflow 并行（含 worktree 隔离与本地检查点提交），无需每次单独请求。
+- 长期授权：在任务分支上本地提交、把非默认分支推送到 origin、为它开 PR，可直接进行（推送前照常做密钥与脱敏检查）；合入默认分支、发布、打 tag、强推、推送到默认分支仍需逐次确认。
 
 # Compact instructions
 

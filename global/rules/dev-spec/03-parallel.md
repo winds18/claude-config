@@ -6,8 +6,8 @@
 | 需要 | 机制 |
 | --- | --- |
 | 只要结论的大范围检索、长日志或失败归因 | `Explore` / `test-triager` 子代理 |
-| 2 个以上可独立验证的包并行实现 | `/dev-spec-dispatch` 准备 → `/dev-spec-implement` workflow（不可用时按 `parallel-dev` 手动派 `implementer`） |
-| L 档集成后的多视角复核 | `/dev-spec-review` workflow，不可用时并行派 `reviewer` / `security-reviewer` |
+| 2 个以上可独立验证的包并行实现 | `/dev-spec-dispatch` 准备并生成三段提示 → 按 `parallel-dev` 派 `case-designer` / `implementer` / `reviewer`（Workflow 工具可用时可改用 `/dev-spec-implement`） |
+| L 档集成后的多视角复核 | `dispatch.py review-args --prompts` 生成各视角提示 → 并行派 `reviewer` / `security-reviewer`，逐条对抗验证（或 `/dev-spec-review` workflow） |
 | 同一机械变换作用于大量文件 | `/batch` 或 workflow pipeline |
 | 各自要长时间推进、可独立交付的大块工作 | 桌面端并行会话（各自 worktree 与 PR），用跨会话消息同步契约变化 |
 
