@@ -15,11 +15,11 @@ global/
     03-parallel.md          机制选择、写入归属硬规则、集成与恢复
     04-git-delivery.md      Git、PR 入口、完成条件、交付说明格式
 skills/                     按需加载的流程（细节只维护在这里）
-  dev-workflow/             L 档五阶段、质量表、测试矩阵、复核、PR 与 CI
+  dev-workflow/             L 档流程：需求、边界、契约、并行实现、测试矩阵、复核、PR 与 CI
   parallel-dev/             派发前检查、工作包、三阶段派发、集成与冲突、接管、桌面端多会话、跨仓
     scripts/integrate.py    确定性集成：preflight / status / plan / apply / cleanup
-  dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → workflow 参数；复核规模计算
-    scripts/dispatch.py     check / prepare / review-args
+  dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → 各包三段提示；复核视角与提示
+    scripts/dispatch.py     env / check / prepare / prompts / review-args
   ui-quality/               界面与交互质量：改 UI 文件时自动启用；状态表、视觉与交互底线、"生成味"清单、渲染验证
     scripts/ui_lint.py      可客观检出的界面问题（无标签输入、焦点样式被去掉、颜色/字号/圆角未收敛……）
   project-bootstrap/        /project-bootstrap：项目 CLAUDE.md、settings、worktree 准备（含模板）
@@ -140,10 +140,10 @@ bash install.sh remote user@host
 | 步骤 | 做法 |
 | --- | --- |
 | 定方案 | `dev-workflow` 需求→架构→契约；方向不明且代价高时才进 Plan 模式 |
-| 准备 | `/dev-spec-dispatch`：计划表 → 校验归属 → 任务分支上提交检查点 → preflight → workflow 参数 |
-| 并行实现 | `/dev-spec-implement`：每包先列对抗用例、先写测试后实现，得到 `ready` 分支与包级复核 |
+| 准备 | `/dev-spec-dispatch`：计划表 → 校验归属 → 任务分支上提交检查点 → preflight → 每个包的三段提示 |
+| 并行实现 | 每包三阶段：`case-designer` 列对抗用例 → worktree 隔离的 `implementer` 先写测试后实现 → `reviewer` 包级复核（Workflow 工具可用时由 `/dev-spec-implement` 自动跑） |
 | 集成 | `integrate.py plan` → `apply <分支…> --verify "<验收>"` → `cleanup` |
-| 复核 | `dispatch.py review-args` 按规模与风险算出视角和 effort → `/dev-spec-review`，只处理被证实的问题 |
+| 复核 | `dispatch.py review-args --prompts` 按规模与风险选视角并生成提示 → 并行发现、逐条对抗验证，只处理被证实的问题 |
 | 交付 | 完成条件 + 交付说明；PR/CI 见 `dev-workflow` §7 |
 
 4. 会话被压缩或恢复后，先 `integrate.py status` 从 git 恢复并行状态。

@@ -1,6 +1,6 @@
 ---
 name: parallel-dev
-description: 并行开发执行手册：派发前检查、工作包、/dev-spec-implement 与 /dev-spec-review workflow、integrate.py 集成、改派接管、桌面端多会话、跨仓联合验收与收尾。
+description: 并行开发执行手册：派发前检查、三阶段派发（用例设计、实现、包级复核）、integrate.py 集成与集成后复核、改派接管、桌面端多会话、跨仓联合验收与收尾。
 when_to_use: L 档任务准备并行实现或多视角复核，需要合并多个 worktree 分支、恢复中断的并行状态、接管他人工作或协调多仓库交付时。
 ---
 
@@ -12,9 +12,9 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 
 ## 1. 派发前检查（全部满足再派写入型工作）
 
-1. **契约检查点**：共享类型/schema/接口已写好并在任务分支提交（本地检查点提交属于并行流程；推送仍需授权）。契约未变时，检查点就是派发时已提交的 HEAD。用户禁止提交时不并行，改串行。
+1. **契约检查点**：共享类型/schema/接口已写好并在任务分支提交（本地检查点提交属于并行流程）。契约未变时，检查点就是派发时已提交的 HEAD。用户禁止提交时不并行，改串行。
 2. **运行 `integrate.py preflight --base <检查点>`**：确认主工作树干净、检查点在 HEAD 历史中、`worktree.baseRef` 实际解析为 `"head"`（安装器在用户设置写入；项目设置可覆盖）。有阻塞不派发。
-3. **环境**：worktree 需要的 gitignored 文件写进 `.worktreeinclude`；每个包写明依赖安装命令（`setup`）。
+3. **环境**：worktree 需要的 gitignored 文件写进 `.worktreeinclude`；每个包写明依赖安装命令（`setup`）。各包的 `setup` 与验收命令应在项目 `permissions.allow` 里，否则后台子代理会卡在审批上。
 4. **运行资源**：给每个写入者分配独立端口、数据库名、缓存与输出目录；无法隔离的步骤串行。先用 `/dev-spec-dispatch` 的 `env` 看本机已占用的端口（服务器上尤其要看）。
 5. **归属**：各包 `owned` 互不重叠；共享文件（锁文件、全局配置、迁移、公共类型）放进 `forbidden`，归主会话。
 
@@ -22,38 +22,25 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 
 包数 ≥ 2 时并行；只有 1 个包时主会话直接实现。
 
-**最省事的入口是 `/dev-spec-dispatch` 技能**：写一张计划表，它负责校验归属重叠、在任务分支提交检查点、运行 preflight，并输出下面这份 args。
+用 `/dev-spec-dispatch` 技能：写一张计划表，`prepare` 校验归属重叠、在任务分支提交检查点、运行 preflight 并输出 args；`prompts` 再按这份 args 生成每个包的三段提示。提示内容只维护在那个脚本里，不要手抄。
 
-**首选 `/dev-spec-implement` workflow**（Workflow 工具可用时）。它为每个包派一个 worktree 隔离的 `implementer`，强制结构化回报，随后由独立 `reviewer` 对照契约复核该包；参数无效（缺基线、归属重叠、缺验收）时直接报错，不派发。args 示例：
+**三阶段**（桌面端会话的常规路径）：
 
-```json
-{
-  "base": "<检查点 SHA>",
-  "contract": "src/types/order.ts#Order",
-  "packages": [
-    {"name": "api", "goal": "实现订单查询接口", "owned": ["src/api/orders/**", "tests/api/orders/**"],
-     "forbidden": ["src/types/**", "package-lock.json"], "setup": "pnpm install --frozen-lockfile",
-     "verify": ["pnpm test tests/api/orders"], "resources": "端口 4101，数据库 app_test_api", "effort": "medium"}
-  ]
-}
-```
+1. **用例设计**：非机械性的包各派一个 `case-designer`（只读，同一消息内并发），拿到对抗用例。`effort: "low"` 的包与 `用例设计: 否` 的计划跳过。
+2. **实现**：同一消息内并发多个 `Agent(subagent_type: "implementer", isolation: "worktree", run_in_background: true)`，把用例粘进提示的"先写成测试的场景"；给每个代理起名（提示里已给出 `impl-<包名>`）以便 `SendMessage` 续接。机械性的包在计划里设 `effort: "low"/"medium"`、`model: "sonnet"` 省成本，核心逻辑不设（继承会话）。
+3. **包级复核**：每个回报 `STATUS: done` 的包派一个 `reviewer`，对照契约与用例复核。`fix-needed` 用 `SendMessage` 交回原实现者修复后复审，一轮为止；仍有分歧由主会话读代码裁决。
 
-- 机械性的包设 `effort: "low"/"medium"`、`model: "sonnet"` 省成本；核心逻辑不设（继承会话）。手动派发时对应 Agent 的 `model` 参数。
-- workflow 会先为每个包运行 `case-designer` 列出对抗用例，实现者先写成测试再实现，包级复核逐条核对。相称性：`effort: "low"` 的包自动跳过用例设计，`case_design: false` 全局关闭；验收命令尽量是可直接执行的入口（`./x.sh`、`make test`），避免被 worktree 隔离拒绝。
-- 结果中 `ready` 是 done 且包级复核通过的分支，`needs_attention` 需要你处理（blocked、partial、fix-needed）。
+可集成的是 `done` 且复核 `pass` 的分支；`partial`、`blocked`、`fix-needed` 由主会话处理。验收命令尽量是可直接执行的入口（`./x.sh`、`make test`），避免被 worktree 隔离拒绝。
 
-**手动派发**（Workflow 工具不可用时——桌面端会话目前常见——按同样的三阶段进行）：
-1. 非机械性的包先各派一个 `case-designer`（只读，可并发），拿到对抗用例；
-2. 并发派 `implementer`，把用例写进工作包的"先写成测试的场景"；
-3. 每个完成的包派一个 `reviewer` 做包级复核，fix-needed 的用 `SendMessage` 交回原 implementer 修复后复审。
+分多波派发（后一波依赖前一波的产出）时：前一波集成并验收后，在新的集成 HEAD 上重新 `prepare`，后一波以它为基线。
 
-工作包写法：按 [references/work-package.md](references/work-package.md) 写自包含工作包，同一消息内并发多个 `Agent(subagent_type: "implementer", isolation: "worktree", run_in_background: true)`，给每个代理起名以便 `SendMessage` 续接。
+Workflow 工具可用时，可以把同一份 args 交给 `/dev-spec-implement`，它自动跑完上述三阶段并返回 `ready` / `needs_attention`。只派单个包、不经过脚本时，按 [references/work-package.md](references/work-package.md) 手写。
 
 ### Hook 强制
 
 | 时机 | 检查 | 结果 |
 | --- | --- | --- |
-| 主会话用 Agent 工具派发 `isolation: "worktree"` | 主工作树有未提交改动；或 baseRef 非 head 且 HEAD 领先远端默认分支 | ask（workflow 内的 `agent()` 不一定经过此钩子，所以派发前必须跑 preflight） |
+| 主会话用 Agent 工具派发 `isolation: "worktree"` | 主工作树有未提交改动；或 baseRef 非 head 且 HEAD 领先远端默认分支 | ask（workflow 内的派发不一定经过此钩子，所以派发前必须跑 preflight） |
 | `implementer` 声明归属 | worktree 起点不包含声明的基线（检查点不可见）；基线提交不存在 | deny，implementer 按 blocked 回报 |
 | `implementer` 在 worktree 内编辑 | 未声明归属（Write `.dev-spec-owner.json`，hook 截获并锁定）；路径在 forbidden 或不在 owned；改写已锁定声明 | deny |
 | `implementer` 结束 | 未提交改动；自分支创建点无提交；改动越界（含 Bash 写入） | 阻止一次，第二次放行由回报说明 |
@@ -70,7 +57,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 2. `integrate.py apply [分支…] --verify "<集成验收命令>"`：按给定顺序 `merge --no-ff`，冲突时自动 `merge --abort` 并停止，最后在集成状态上运行验收。顺序按依赖：被依赖的先合。
    - **冲突**：归属不重叠时冲突通常来自共享文件被多方改动，说明归属被破坏或契约在途变化。不要在主工作树手工拼接：把冲突分支交还其负责人（`SendMessage` 续接原 implementer，或派新的 implementer 接手该分支），让它在自己的 worktree 合入当前集成 HEAD 并解决冲突、重新提交，然后重新 `plan`。锁文件、生成文件这类归主会话的共享文件，由主会话在合并后统一重新生成并单独提交。
    - **验收失败**：交 `test-triager` 归因，修复归属方负责；修复后重跑 `apply` 的验收命令。
-3. 集成后复核：`/dev-spec-review` workflow，args 用 `/dev-spec-dispatch` 的 `review-args --range <检查点>..HEAD` 生成（按规模与风险选视角和 effort）；只处理 `confirmed`，`uncertain` 自行核实。不可用时并行派 `reviewer` 与 `security-reviewer`。
+3. 集成后复核：`dispatch.py review-args --range <检查点>..HEAD --prompts` 按规模与风险选出视角，并生成每个视角的发现提示与对抗验证提示。同一消息内并发派出各视角的发现者，合并重复项后为每条候选派一个验证者；只处理 `confirmed`，`uncertain` 自行核实。Workflow 工具可用时，去掉 `--prompts` 得到的 JSON 就是 `/dev-spec-review` 的 args。
 4. `integrate.py cleanup`：只移除已合入且干净的 worktree 与分支，其余列出原因。
 
 压缩或恢复会话后先跑 `integrate.py status`，从 git 恢复各 worktree 的分支、归属、领先提交与合入状态。查看 worktree 用 `git -C <path>`，不要 `cd` 进去（会改变主会话的工作目录）。
@@ -101,6 +88,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 
 ## 8. 收尾
 
+- 在服务器（SSH 会话）上做完、要回本机继续时：推送任务分支，本机 `git fetch` 后从该分支接着做；不靠复制文件。
 - 停止无关后台任务与代理；`integrate.py cleanup`，保留的 worktree 说明原因。
 - 清理自建的临时目录、端口占用进程。
 - 按 `04-git-delivery` 的完成条件与交付格式汇报，附 `integrate.py apply` 的验收结果。

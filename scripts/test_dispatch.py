@@ -396,6 +396,50 @@ def main() -> int:
         p = run("prepare", str(plan_file("| 包名 | 目标 | 负责 | 验收 | 模型 |\n| --- | --- | --- | --- | --- |\n| a | g | src/a/** | t | haiku |\n", "mm.md")))
         check("model: Markdown 的「模型」列", json.loads(p.stdout or "{}").get("packages", [{}])[0].get("model") == "haiku", p.stdout + p.stderr)
 
+        # ---------- prompts：手动派发的三段提示 ----------
+        d = load(SRC_DISPATCH / "scripts/dispatch.py", "dispatch_prompts")
+        impl_js = (ROOT / "workflows/dev-spec-implement.js").read_text(encoding="utf-8")
+        review_js = (ROOT / "workflows/dev-spec-review.js").read_text(encoding="utf-8")
+        missing = [x for x in d.PARITY if x not in impl_js + review_js]
+        check("prompts: 关键句与 workflow 源码逐字一致", not missing, str(missing))
+        check("prompts: 视角提问与 workflow 一致", all(ask in review_js and f"agentType: '{agent}'" in review_js for agent, ask in d.LENSES.values()))
+        pp = {"contract": "src/types/o.ts#Order", "packages": [
+            {"name": "api", "goal": "实现查询", "owned": ["src/a/**"], "forbidden": ["src/types/**"], "verify": ["make test-a"],
+             "setup": "make deps", "resources": "端口 4101", "notes": "错误码不变", "model": "sonnet"},
+            {"name": "fmt", "goal": "机械改名", "owned": ["src/b/**"], "verify": ["make test-b"], "effort": "low"}]}
+        args_file = Path(tmp) / "prompt-args.json"
+        p = run("prepare", str(plan_file(pp)), "--out", str(args_file))
+        check("prompts: prepare 生成 args", p.returncode == 0 and args_file.exists(), p.stdout + p.stderr)
+        base = json.loads(args_file.read_text())["base"]
+        p = run("prompts", str(args_file))
+        o = p.stdout
+        check("prompts: 三个阶段齐全", p.returncode == 0 and all(x in o for x in ("## 1. 用例设计", "## 2. 实现", "## 3. 包级复核")), o[-400:] + p.stderr)
+        check("prompts: 实现提示含基线、归属声明、资源与验收", all(x in o for x in (
+            base, '"owned": ["src/a/**"]', '"forbidden": ["src/types/**"]', "先执行：make deps", "端口 4101", "- make test-a", d.NO_CHEAT, "STATUS: done|partial|blocked")), o[:1500])
+        check("prompts: 契约与约束进入三段提示", o.count("src/types/o.ts#Order") >= 3 and o.count("错误码不变") >= 3, o[:800])
+        check("prompts: Agent 调用带隔离与模型", 'isolation: "worktree"' in o and 'model: "sonnet"' in o and 'name: "impl-api"' in o, o[:600])
+        fmt = o[o.index("# 工作包 fmt"):]
+        check("prompts: 机械性的包跳过用例设计", "用例设计 — 跳过" in fmt and "先写成测试的场景" not in fmt and "对抗用例" not in fmt, fmt[:600])
+        check("prompts: 非机械包要求先写测试", "先写成测试的场景" in o[:o.index("# 工作包 fmt")])
+        p = run("prompts", str(args_file), "--package", "fmt")
+        check("prompts: --package 只输出一个包", p.returncode == 0 and "# 工作包 fmt" in p.stdout and "# 工作包 api" not in p.stdout, p.stdout[:300])
+        p = run("prompts", str(args_file), "--package", "nope")
+        check("prompts: 未知包名退出 2", p.returncode == 2 and not p.stdout.strip(), p.stdout + p.stderr)
+        out_dir = Path(tmp) / "prompts-out"
+        p = run("prompts", str(args_file), "--out-dir", str(out_dir))
+        check("prompts: --out-dir 每包一个文件", p.returncode == 0 and sorted(x.name for x in out_dir.iterdir()) == ["api.prompts.md", "fmt.prompts.md"], p.stdout + p.stderr)
+        p = run("prompts", str(plan_file(pp, "raw-plan.json")))
+        check("prompts: 拒绝没有 base 的原始计划", p.returncode == 2 and "base" in p.stderr, p.stdout + p.stderr)
+        off = dict(json.loads(args_file.read_text()), case_design=False)
+        off_file = Path(tmp) / "off-args.json"
+        off_file.write_text(json.dumps(off, ensure_ascii=False))
+        p = run("prompts", str(off_file))
+        check("prompts: case_design=false 时全部跳过用例", p.returncode == 0 and "case-designer" not in p.stdout, p.stdout[:300])
+        p = run("review-args", "--range", f"{base}..HEAD", "--prompts")
+        check("review --prompts: 每个视角一段发现提示加验证提示", p.returncode == 0 and "## 发现 · correctness" in p.stdout
+              and "## 发现 · tests" in p.stdout and "## 验证" in p.stdout and d.VERIFIER_ROLE in p.stdout
+              and "VERDICT: confirmed|refuted|uncertain" in p.stdout, p.stdout[:600] + p.stderr)
+
         p = run("review-args", "--range", "nosuchref..HEAD")
         check("无效范围退出 2", p.returncode == 2 and not p.stdout.strip(), p.stdout + p.stderr)
 

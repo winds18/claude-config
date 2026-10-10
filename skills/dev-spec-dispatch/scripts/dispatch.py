@@ -5,7 +5,13 @@
   dispatch.py prepare PLAN [--commit] [--message MSG] [--allow-default-branch] [--out FILE]
                                                 check -> checkpoint commit -> integrate.py preflight
                                                 -> /dev-spec-implement args (base = HEAD)
-  dispatch.py review-args --range A..B|A        /dev-spec-review args sized by the diff
+  dispatch.py prompts ARGS [--package NAME] [--out-dir DIR]
+                                                the three prompts per package (case-designer, implementer,
+                                                reviewer) for dispatching by hand with the Agent tool
+  dispatch.py review-args --range A..B|A [--prompts]
+                                                /dev-spec-review args sized by the diff; --prompts prints the
+                                                per-lens finder prompts and the verifier prompt instead
+  dispatch.py env [--json]                      delivery / isolation facts of this machine
 
 PLAN is either JSON shaped like the /dev-spec-implement args ({contract?, packages: [...]}, base
 optional) or a Markdown file with a table whose columns are
@@ -449,6 +455,141 @@ def review_args(range_: str) -> dict:
     }
 
 
+# ---------- prompts for dispatching by hand ----------
+# The same three stages workflows/dev-spec-implement.js runs. Sentences in PARITY must stay literally present in
+# the workflow source; scripts/test_dispatch.py checks that, so the two paths cannot drift apart silently.
+
+CASE_ASK = "只列与本包改动真实相关、会让实现出错的场景，5–12 条，按出错代价与可能性排序。"
+NO_CHEAT = "不得删测试、弱化断言或跳过错误来通过"
+REVIEW_FOCUS = "重点：是否实现目标、是否与契约及其消费者一致、失败路径与边界、是否删测试或弱化断言、自报检查是否可信。"
+REVIEW_SCALE = "严格度与包的规模相称：目标、契约与验收没有要求的属性不构成 fix-needed。"
+FINDER_RULE = "每条发现必须给出可复现的触发条件与错误结果；风格偏好、泛泛的\"建议加测试\"不算。"
+VERIFIER_ROLE = "你是对抗验证者：尽力证伪下面这条复核发现，只有在无法证伪时才判 confirmed。"
+VERIFIER_METHOD = "方法：阅读真实代码路径；能用只读命令或现有测试验证的就去验证。证据不足时判 uncertain，不要猜。"
+LENSES = {   # lens -> (agent type, question); same text as LENSES in workflows/dev-spec-review.js
+    "correctness": ("reviewer", "正确性与回归：边界条件、空值/异常路径、并发与状态、错误处理是否吞错"),
+    "contract": ("reviewer", "契约一致性：接口/类型/schema 变化后，所有生产者与消费者、文档、测试是否同步；错误语义是否一致"),
+    "security": ("security-reviewer", "安全：鉴权与越权、注入、敏感数据进入日志/URL/提交、密钥硬编码、危险默认值"),
+    "performance": ("reviewer", "性能与复杂度：N+1、重复扫描或 I/O、无界内存/并发、复杂度退化，需按实际规模说明影响"),
+    "tests": ("reviewer", "验证充分性：改动行为是否有测试覆盖失败路径；是否删测试、弱化断言、跳过错误或用 mock 冒充集成"),
+}
+PARITY = (CASE_ASK, NO_CHEAT, REVIEW_FOCUS, REVIEW_SCALE, FINDER_RULE, VERIFIER_ROLE, VERIFIER_METHOD)
+
+
+def wants_cases(p: dict, args: dict) -> bool:
+    """Proportionality rule shared with the workflow: off globally, or the package is marked mechanical."""
+    return args.get("case_design") is not False and p.get("effort") != "low"
+
+
+def package_prompts(p: dict, args: dict) -> dict:
+    """{"case": str | None, "implement": str, "review": str, "agent": {...}} for one package."""
+    base, contract, notes = args["base"], args.get("contract"), p.get("notes")
+    owned, forbidden = p["owned"], p.get("forbidden") or []
+    case = None
+    if wants_cases(p, args):
+        case = "\n".join(filter(None, [
+            f"为工作包「{p['name']}」设计对抗用例，供实现者在写代码前先写成测试。",
+            f"目标：{p['goal']}",
+            f"负责范围：{', '.join(owned)}",
+            f"契约权威来源：{contract}" if contract else "",
+            f"关键约束：{notes}" if notes else "",
+            f"基线提交：{base}（只读查看现有代码与测试：git show {base}:<path>、git grep）",
+            CASE_ASK,
+            "每条一行：`优先级（high/medium/low）| 场景名 | 前置 | 操作 | 期望 | 防止的错误`。",
+        ]))
+    decl = json.dumps({"base": base, "owned": owned, "forbidden": forbidden}, ensure_ascii=False)
+    sections = [
+        f"## 目标\n{p['goal']}",
+        f"## 基线\n- 起点提交：{base}（包含共享契约检查点）" + (f"\n- 先执行：{p['setup']}" if p.get("setup") else ""),
+        f"## 归属\n- 你负责（可写）：{', '.join(owned)}\n- 禁止修改：{', '.join(forbidden) or '归属以外的一切'}\n"
+        f"- 开工第一步：用 Write 工具写 worktree 根目录的 .dev-spec-owner.json，内容严格为：\n  {decl}\n"
+        "  返回\"✓ 归属已记录\"即成功；若被拒并提示起点不包含基线，说明契约检查点不可见，不要开工，按 blocked 回报并写明原因。"
+        + (f"\n- 运行资源：{p['resources']}" if p.get("resources") else ""),
+        ("## 契约\n" + "\n".join(filter(None, [f"- 权威来源：{contract}" if contract else "",
+                                                 f"- 关键约束：{notes}" if notes else ""]))) if contract or notes else "",
+        "## 授权\n- 可以：在当前 worktree 分支本地提交\n- 禁止：push、修改归属外文件、用 Bash 写文件绕过 hook",
+        ("## 先写成测试的场景（对抗用例）\n先把下列场景写成测试并确认它们在实现前失败（或说明为何不适用），再实现：\n"
+         "<粘贴 case-designer 的输出；没有用例时删掉本节>") if case else "",
+        "## 验收\n" + "\n".join(f"- {c}" for c in p["verify"]) + f"\n- {NO_CHEAT}",
+        "## 回报\n第一行 `STATUS: done|partial|blocked`，随后：分支名与最终提交 SHA（git rev-parse HEAD）、改动文件、"
+        "实际运行的每条检查命令与真实退出码（失败原样给出）、未验证面、发现的契约问题。",
+    ]
+    review = "\n".join(filter(None, [
+        f"复核工作包「{p['name']}」在分支 <实现者回报的分支> 上的改动：git diff {base}..<分支>",
+        f"目标：{p['goal']}",
+        f"契约权威来源：{contract}" if contract else "",
+        f"关键约束：{notes}" if notes else "",
+        "实现者自报的检查与未验证面：<粘贴回报中的对应部分>",
+        "对抗用例（逐条核对是否有对应测试；缺失且未说明理由的算 fix-needed）：\n<粘贴同一份用例>" if case else "",
+        REVIEW_FOCUS + REVIEW_SCALE + "只报有触发条件的真实问题。",
+        "最后一行 `VERDICT: pass` 或 `VERDICT: fix-needed`。",
+    ]))
+    agent = {"subagent_type": "implementer", "isolation": "worktree", "run_in_background": True, "name": f"impl-{p['name']}"}
+    if p.get("model") and p["model"] != "inherit":
+        agent["model"] = p["model"]
+    if p.get("effort"):
+        agent["effort"] = p["effort"]
+    return {"case": case, "implement": "\n\n".join(filter(None, sections)), "review": review, "agent": agent}
+
+
+def review_prompts(r: dict) -> str:
+    """Markdown for the by-hand review after integration: one finder per lens, then one verifier per finding."""
+    rng = r["range"]
+    parts = [f"# 集成后复核（手动）：{rng}",
+             "同一条消息内并发派出下列发现者（只读）；回收后合并同一文件相邻行的重复项，"
+             "再为每条候选各派一个验证者。只处理判为 confirmed 的；uncertain 自己核实；一轮为止，分歧由主会话裁决。"]
+    for lens in r["lenses"]:
+        agent_type, ask = LENSES[lens]
+        parts.append(f"## 发现 · {lens}（{agent_type}，effort {r['finder_effort']}；入选理由：{r['reasons'][lens]}）\n\n"
+                     f"只读复核 git diff {rng}（先 git diff --stat {rng} 了解范围，再读受影响的调用方与被调用方）。\n"
+                     f"本轮只看一个视角——{ask}。\n{FINDER_RULE}没有发现就明确说没有。\n"
+                     "每条一行：`严重度（critical/high/medium/low）| 文件:行 | 问题 | 触发条件`。")
+    parts.append(f"## 验证（reviewer，每条候选一个）\n\n{VERIFIER_ROLE}\n范围：git diff {rng}\n"
+                 "发现：<文件:行> [<严重度>] <问题>\n声称的触发条件：<触发条件>\n"
+                 f"{VERIFIER_METHOD}\n最后一行 `VERDICT: confirmed|refuted|uncertain`，并给出证据。")
+    for n in r["notes"]:
+        parts.append(f"> 注意：{n}")
+    return "\n\n".join(parts) + "\n"
+
+
+def cmd_prompts(a) -> int:
+    try:
+        args = json.loads(Path(a.args).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return fail(f"读不了 args 文件 {a.args}：{e}")
+    if not isinstance(args, dict) or not isinstance(args.get("base"), str) or not re.fullmatch(r"[0-9a-f]{7,64}", args["base"]):
+        return fail("需要 prepare 生成的 args（含 base 检查点 SHA），不是原始计划")
+    r = validate(args)
+    if not r["ok"]:
+        return fail("args 无效：\n- " + "\n- ".join(r["errors"]))
+    pkgs = [p for p in args["packages"] if a.package in (None, p["name"])]
+    if not pkgs:
+        return fail(f"没有名为 {a.package} 的包")
+    docs = {}
+    for p in pkgs:
+        pr = package_prompts(p, args)
+        call = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in pr["agent"].items())
+        doc = [f"# 工作包 {p['name']}", "顺序：用例设计（只读，可与其他包并发）→ 实现 → 包级复核。"
+               "复核为 fix-needed 时用 SendMessage 交回原实现者修复，复审一轮为止，仍有分歧由主会话裁决。"]
+        if pr["case"]:
+            doc.append("## 1. 用例设计 — Agent(subagent_type: \"case-designer\")\n\n" + pr["case"])
+        else:
+            doc.append("## 1. 用例设计 — 跳过（机械性的包或已全局关闭）")
+        doc.append(f"## 2. 实现 — Agent({call})\n\n" + pr["implement"])
+        doc.append("## 3. 包级复核 — Agent(subagent_type: \"reviewer\")\n\n" + pr["review"])
+        docs[p["name"]] = "\n\n".join(doc) + "\n"
+    if a.out_dir:
+        d = Path(a.out_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        for name, text in docs.items():
+            target = d / (re.sub(r"[^\w.-]+", "_", name) + ".prompts.md")
+            target.write_text(text, encoding="utf-8")
+            print(target)
+    else:
+        print("\n".join(docs.values()), end="")
+    return 0
+
+
 def explicit_identity() -> bool:
     """Same rule as integrate.py preflight: an identity the user provided, not git's synthesised user@hostname."""
     return all(git("-c", "user.useConfigOnly=true", "var", v).returncode == 0
@@ -528,7 +669,7 @@ def cmd_review_args(a) -> int:
         r = review_args(a.range)
     except PlanError as e:
         return fail(str(e))
-    print(json.dumps(r, ensure_ascii=False, indent=2))
+    print(review_prompts(r) if a.prompts else json.dumps(r, ensure_ascii=False, indent=2), end="" if a.prompts else "\n")
     return 0
 
 
@@ -549,8 +690,13 @@ def main() -> int:
     e.add_argument("--json", action="store_true")
     r = sub.add_parser("review-args", help="按改动规模生成 /dev-spec-review args")
     r.add_argument("--range", required=True, help="A..B 或 A（等价 A..HEAD）")
+    r.add_argument("--prompts", action="store_true", help="输出手动复核用的各视角提示与验证提示，而不是 JSON")
+    m = sub.add_parser("prompts", help="按 prepare 生成的 args 输出每个包的用例设计 / 实现 / 包级复核提示（手动派发用）")
+    m.add_argument("args", help="prepare 的 --out 文件")
+    m.add_argument("--package", help="只输出这个包")
+    m.add_argument("--out-dir", help="每个包写成 <包名>.prompts.md（默认 stdout）")
     a = ap.parse_args()
-    return {"check": cmd_check, "prepare": cmd_prepare, "review-args": cmd_review_args, "env": cmd_env}[a.cmd](a)
+    return {"check": cmd_check, "prepare": cmd_prepare, "review-args": cmd_review_args, "env": cmd_env, "prompts": cmd_prompts}[a.cmd](a)
 
 
 if __name__ == "__main__":
