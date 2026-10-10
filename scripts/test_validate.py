@@ -176,6 +176,22 @@ def test_regex_regressions(tmp: Path) -> None:
         check(f"回归: 识别「{text}」并报不存在的章节", r.returncode != 0 and "§9" in r.stdout, r.stdout[-600:])
 
 
+def test_rule_sections(tmp: Path) -> None:
+    # deleting a resident-rule section must fail unless the tracked list is edited too (incident 2026-10-10)
+    repo = copy_repo(tmp, "lost-section")
+    f = repo / "global/rules/dev-spec/01-core.md"
+    text = f.read_text()
+    a = text.index("## 授权与安全"); b = text.index("## 从失误中学习")
+    f.write_text(text[:a] + text[b:])
+    r = run_validate(repo)
+    check("拦截：常驻规则章节被删除", r.returncode != 0 and "授权与安全" in r.stdout and "不见了" in r.stdout, r.stdout[-600:])
+    repo = copy_repo(tmp, "new-section")
+    f = repo / "global/rules/dev-spec/01-core.md"
+    f.write_text(f.read_text() + "\n## 未登记的新章节\n\n- x\n")
+    r = run_validate(repo)
+    check("拦截：新增章节未登记", r.returncode != 0 and "未登记" in r.stdout, r.stdout[-600:])
+
+
 def test_select_groups() -> None:
     v = load_validate()
     sel = v.select_groups
@@ -402,6 +418,7 @@ def main() -> int:
         test_clean_and_valid_refs(tmp)
         test_injections(tmp)
         test_regex_regressions(tmp)
+        test_rule_sections(tmp)
         test_select_groups()
         test_changed_git(tmp)
         srv = load_server_tests()

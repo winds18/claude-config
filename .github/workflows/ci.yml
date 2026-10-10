@@ -56,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        debian: ["11", "12"]            # 11 ships python 3.9, the declared minimum
+        debian: ["12", "13"]            # supported releases only (11's apt archive is past LTS); 3.9 is covered on ubuntu
     steps:
       - name: Install git and python3
         run: apt-get update && apt-get install -y git python3 ca-certificates   # before checkout: without git it would fetch a tarball with no history

@@ -421,6 +421,7 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
     (r"scripts/test_self_update\.py", ("self_update",)),
     (r"scripts/release\.py|scripts/test_release\.py", ("release",)),
     (r"\.github/workflows/.*", ()),                                           # CI 定义：静态检查（YAML）即可，CI 自身会运行全量
+    (r"scripts/rule-sections\.txt", ("validate",)),
     (r"scripts/validate\.py|scripts/test_validate\.py", ("validate",)),
     (r"global/.*", ("install", "self_update", "server")),                      # 安装往返、自更新与服务器部署测试写死了其中文件与内容
     (r"agents/.*", ("install", "validate")),                                   # 安装往返检查 implementer；validate 校验子代理类型
@@ -469,6 +470,24 @@ def changed_groups_main(base: str) -> int:
     return 0
 
 
+def check_rule_sections() -> None:
+    """Resident rules must match the tracked section list exactly, so a section cannot vanish unnoticed."""
+    listing = ROOT / "scripts/rule-sections.txt"
+    if not listing.exists():
+        errors.append("scripts/rule-sections.txt 缺失：无法核对常驻规则的章节是否完整")
+        return
+    want = {tuple(l.split("\t", 1)) for l in listing.read_text().splitlines() if l.strip() and not l.startswith("#")}
+    have = set()
+    for f in sorted((ROOT / "global").rglob("*.md")):
+        rel = str(f.relative_to(ROOT))
+        for h in re.findall(r"^(#{1,2} .+)$", f.read_text(), re.M):
+            have.add((rel, h.strip()))
+    for rel, h in sorted(want - have):
+        errors.append(f"{rel}: 章节「{h}」不见了。确属有意删除时同时从 scripts/rule-sections.txt 移除")
+    for rel, h in sorted(have - want):
+        errors.append(f"{rel}: 新章节「{h}」未登记到 scripts/rule-sections.txt")
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--changed-groups"]:
         if len(argv) > 2:
@@ -481,6 +500,7 @@ def main(argv: list[str]) -> int:
     check_agents()
     check_skills()
     check_rules_budget()
+    check_rule_sections()
     check_links()
     check_json_and_python()
     check_no_secrets()

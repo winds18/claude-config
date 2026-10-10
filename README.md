@@ -32,7 +32,9 @@ hooks/
   hooks.json                守卫的 settings 片段
 scripts/                    安装器（link/copy/doctor/uninstall）、validate.sh 与各项测试
   release.py                发布闸门：CI 通过的 main 提交 → tag + GitHub Release
-.github/workflows/ci.yml    CI：Linux（Python 3.9 / 3.13）与 macOS 上跑全量校验
+  server-setup.sh           在服务器上安装/更新（只需 git 与 python3）
+  rule-sections.txt         常驻规则章节清单：章节增删必须同时改它，防止规则被无意删除
+.github/workflows/ci.yml    CI：Ubuntu（Python 3.9 / 3.13）、macOS，以及只有 git + python3 的 Debian 12 / 13 容器
 docs/
   design.md                 设计取舍与依据
   incidents.md              事件记录：每条规则修订的来源
@@ -89,7 +91,7 @@ bash install.sh uninstall --apply
 
 1. `git fetch` 安装时记录的规范仓库。默认 **stable 通道只跟随发布 tag（vX.Y.Z）**，合入 `main` 不会推到其他设备；`--channel main` 改为跟随主分支（只建议用于开发机）。已发布的 tag 被移动时拒绝跟随；
 2. 只接受**干净的 fast-forward**：仓库有未提交改动、有未推送的本地提交、历史分叉或不在跟踪分支上时一律跳过（不会碰你正在开发的内容）；
-3. 把新版本检出到临时 worktree，跑完整的 `scripts/validate.sh`，**不通过就保持当前版本**；
+3. 把新版本检出到临时 worktree，跑设备端校验 `scripts/validate.sh --device`（静态检查、守卫测试、安装往返；只需 git 与 python3，几秒完成），**不通过就保持当前版本**。完整校验由 CI 在发布前完成；
 4. 通过后 fast-forward 并按安装时记住的选项重装；重装失败则把源仓库退回原版本。
 
 | 命令 / 选项 | 作用 |
@@ -106,6 +108,24 @@ bash install.sh uninstall --apply
 结果写入 `~/.claude/dev-spec-update.json`，过程追加到 `~/.claude/dev-spec-update.log`。新规则从下一个会话起生效，技能、hook、workflow 即时生效。退役旧规则这类一次性迁移不会在更新时重复执行。
 
 安全提示：自动更新会在每台设备上执行仓库里的 hook 代码，等同于信任该仓库的所有推送者。建议给 `main` 开启分支保护；对安全要求高的设备使用 `--require-signed`。
+
+## 服务器（Debian，桌面端 SSH 会话）
+
+桌面端的 SSH 会话在远程主机上运行 Claude，读取的是**远程主机**的 `~/.claude`，所以每台服务器要各装一份。服务器只需要 git 和 python3（≥3.9，即 Debian 11 及以上），不需要 node。
+
+```bash
+bash install.sh remote user@host
+```
+
+它经 ssh 在服务器上执行 `scripts/server-setup.sh`：克隆仓库到 `~/.local/share/claude-config`，停在最新发布版本，以 copy 模式安装并开启自动更新（之后随发布 tag 自动升级）。可重复执行；缺依赖时只提示 `sudo apt-get install -y git python3`，不会自行提权。也可以登录服务器后直接运行该脚本。
+
+| 选项 | 作用 |
+| --- | --- |
+| `--port N` | ssh 端口 |
+| `DEV_SPEC_KEEP_EXISTING=1` | 环境变量：首次安装不接管服务器上已有的 `CLAUDE.md`、不退役已有规则（默认会接管并备份，可用 uninstall 还原） |
+| `DEV_SPEC_DIR` / `DEV_SPEC_REPO_URL` | 环境变量：克隆位置 / 仓库地址（在服务器上直接运行脚本时使用） |
+
+退出码非 0 表示安装失败、状态检查有问题，或更新被拒绝。
 
 ## 在项目中使用
 
@@ -155,7 +175,7 @@ Workflow 工具不可用时（桌面端会话目前常见），按 `parallel-dev
 bash scripts/validate.sh
 ```
 
-迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前与自动更新时跑全量。
+迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前跑全量。没有 node 的机器上，依赖 node 的两段会跳过并在结尾标为未验证（CI 中强制要求）。
 
 发布：改动经 PR 合入 `main`、CI 通过后运行 `python3 scripts/release.py X.Y.Z`（先加 `--dry-run` 预览）。它只在 HEAD 等于 origin/main 且该提交的 CI 全部通过时打 tag，并从提交信息生成发布说明。
 

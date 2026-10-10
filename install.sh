@@ -10,7 +10,8 @@
 #   bash install.sh --claude-home DIR    # 安装到其他配置目录（测试/多账号）
 #   bash install.sh remote user@host [--port N]
 #                                        # 把规范装到服务器（只需 git + python3 ≥3.9）：经 ssh 在对方执行
-#                                        # scripts/server-setup.sh；重复执行即更新。本机设置的 DEV_SPEC_REPO_URL 会带过去
+#                                        # scripts/server-setup.sh；重复执行即更新。本机设置的 DEV_SPEC_REPO_URL 与
+#                                        # DEV_SPEC_KEEP_EXISTING=1 会带过去
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -32,6 +33,8 @@ if [[ "${1:-}" == remote ]]; then
     quote="'" escaped="'\\''"
     remote_cmd="DEV_SPEC_REPO_URL='${DEV_SPEC_REPO_URL//$quote/$escaped}' bash -s"
   fi
+  # 只转发固定取值，不把任意文本带进远端命令
+  [[ "${DEV_SPEC_KEEP_EXISTING:-}" == 1 ]] && remote_cmd="DEV_SPEC_KEEP_EXISTING=1 $remote_cmd"
   # 脚本走 stdin，对方无需先有本仓库；ssh 的退出码就是本命令的退出码
   exec ssh ${port:+-p "$port"} -- "$host" "$remote_cmd" < "$here/scripts/server-setup.sh"
 fi

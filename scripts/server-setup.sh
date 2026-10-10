@@ -6,10 +6,13 @@
 #   DEV_SPEC_REPO_URL   规范仓库（默认 https://github.com/winds18/claude-config.git）
 #   DEV_SPEC_DIR        克隆位置（默认 ~/.local/share/claude-config）
 #   CLAUDE_CONFIG_DIR   Claude 配置目录（默认 ~/.claude）
+#   DEV_SPEC_KEEP_EXISTING=1  首次安装时不接管已有的 CLAUDE.md、不退役 rules/ 下已有规则
 # 行为：
 #   首次  克隆 → 把默认分支放到语义版本最高的发布 tag（vX.Y.Z；还没有 tag 就留在分支最新提交）
 #         → 直接用克隆里的安装器以 copy 模式安装（不经过该版本的 install.sh / validate.sh：发布 tag 已由 CI 校验）→ doctor
 #   之后  已安装：只运行更新器（stable 通道跟随发布 tag）；有克隆但没装上：继续安装
+#   首次安装默认接管 CLAUDE.md 并把 rules/ 下原有规则移入 dev-spec-backups/（uninstall 可还原）。
+#   退出码：安装失败、doctor 有问题、或更新被拒绝/失败时非 0。
 #   已存在的克隆不 reset、不重新克隆；已有文件一律不删除；缺依赖时在创建任何目录之前退出，本脚本不调用 sudo。
 # 全部逻辑在 main 里、最后一行才调用：经 stdin 读入时 bash 先读完整个脚本再执行，且 main 的 stdin 接 /dev/null，
 # 子进程读不到（也就吞不掉）脚本正文。不依赖 $0 / BASH_SOURCE。
@@ -89,6 +92,9 @@ main() {
   local conf="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   [[ "$dir" == /* ]] || dir="$PWD/$dir"
   [[ "$conf" == /* ]] || conf="$PWD/$conf"
+  # 去掉尾部斜杠：否则临时克隆会落在目标目录内部，首次安装必然失败
+  while [[ "$dir" == */ && "$dir" != / ]]; do dir="${dir%/}"; done
+  while [[ "$conf" == */ && "$conf" != / ]]; do conf="${conf%/}"; done
   export CLAUDE_CONFIG_DIR="$conf" GIT_TERMINAL_PROMPT=0
 
   local manifest="$conf/.dev-spec-manifest.json" installed=0 fresh=0 origin_dir="" rc=0
@@ -119,19 +125,31 @@ sys.exit(0 if src and os.path.realpath(src) == os.path.realpath(sys.argv[2]) els
     local updater="$conf/hooks/dev-spec/dev_spec_update.py"
     [[ -f "$updater" ]] || updater="$dir/hooks/dev_spec_update.py"
     python3 "$updater" --now --verbose
+    # 更新器自身恒返回 0（不能打断会话）；这里读它记录的结果，被拒绝或失败时让本脚本非 0，批量部署才不会假绿
+    local result
+    result="$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("last_result", ""))
+except Exception:
+    print("")' "$conf/dev-spec-update.json")"
+    case "$result" in 拒绝*|失败*) rc=1 ;; esac
   elif [[ $installed == 1 ]]; then
     # 清单还在但克隆是新建的（原克隆被移走）：按记住的选项重装，不重复一次性的迁移
     say "==> 克隆已重建，按原选项重新安装"
     python3 "$dir/scripts/dev_spec_install.py" install --copy --apply || die "安装失败；修复后可重跑本脚本"
   else
     say "==> 安装（copy 模式，自动更新跟随发布 tag）"
-    python3 "$dir/scripts/dev_spec_install.py" install --copy --manage-claude-md --retire-legacy-rules --apply \
+    # 默认接管 CLAUDE.md 并把 rules/ 下原有规则移入备份（可用 uninstall 还原）；DEV_SPEC_KEEP_EXISTING=1 时两者都不动
+    local takeover=(--manage-claude-md --retire-legacy-rules)
+    [[ "${DEV_SPEC_KEEP_EXISTING:-}" == 1 ]] && takeover=()
+    python3 "$dir/scripts/dev_spec_install.py" install --copy ${takeover[@]+"${takeover[@]}"} --apply \
       || die "安装失败；克隆保留在 ${dir}，修复后可重跑本脚本"
   fi
 
   say "==> 状态"
-  python3 "$dir/scripts/dev_spec_install.py" doctor      # 有问题时非 0，即本脚本的退出码
+  python3 "$dir/scripts/dev_spec_install.py" doctor || rc=1
   DONE=1
+  return "$rc"
 }
 
 main "$@" </dev/null

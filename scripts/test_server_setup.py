@@ -292,6 +292,43 @@ def test_no_release_tag(tmp: Path, path: str, logs: Path, genv: dict) -> None:
           and box.head() == head, out(r))
 
 
+def test_review_followups(tmp: Path, path: str, logs: Path, genv: dict) -> None:
+    """Regressions from the package review: trailing slash, exit code on a rejected update, opt-out of takeover."""
+    o = Origin(tmp, "followup", worktree_files, genv)
+    o.publish("base")
+    o.tag("v0.1.0")
+
+    # trailing slash on DEV_SPEC_DIR / CLAUDE_CONFIG_DIR must not break the first install
+    box = Box(tmp, "box-slash", o, path, logs)
+    r = box.setup(DEV_SPEC_DIR=str(box.src) + "/", CLAUDE_CONFIG_DIR=str(box.conf) + "//")
+    check("回归: 目录带尾部斜杠时首次安装成功", r.returncode == 0 and doctor_line(r) == "doctor: 正常"
+          and box.manifest().get("source") == str(box.src), out(r))
+
+    # a rejected update must surface as a non-zero exit (batch deployments read the exit code)
+    o.publish("next")
+    o.tag("v0.2.0")
+    r = box.setup(DEV_SPEC_UPDATE_VALIDATE_CMD="false")
+    check("回归: 更新被拒绝时脚本非 0", r.returncode != 0 and "拒绝" in r.stdout and "next" not in box.rule(), out(r))
+    r = box.setup()
+    check("回归: 随后正常更新退出 0", r.returncode == 0 and "next" in box.rule(), out(r))
+
+    # DEV_SPEC_KEEP_EXISTING=1: do not take over CLAUDE.md or retire existing rules on first install
+    keep = Box(tmp, "box-keep", o, path, logs)
+    (keep.conf / "rules").mkdir(parents=True)
+    (keep.conf / "rules/mine.md").write_text("mine\n")
+    (keep.conf / "CLAUDE.md").write_text("# my own\n")
+    r = keep.setup(DEV_SPEC_KEEP_EXISTING="1")
+    check("回归: KEEP_EXISTING 时保留用户的 CLAUDE.md 与规则", r.returncode == 0
+          and (keep.conf / "CLAUDE.md").read_text() == "# my own\n" and (keep.conf / "rules/mine.md").exists()
+          and (keep.conf / INSTALLED_RULE).exists(), out(r))
+    take = Box(tmp, "box-take", o, path, logs)
+    (take.conf / "rules").mkdir(parents=True)
+    (take.conf / "rules/mine.md").write_text("mine\n")
+    r = take.setup()
+    check("默认: 首次安装退役原有规则并留有备份", r.returncode == 0 and not (take.conf / "rules/mine.md").exists()
+          and any(b.endswith("rules/mine.md") for b in take.backups()), out(r) + str(take.backups()))
+
+
 def test_pre_feature_release(tmp: Path, path: str, logs: Path, genv: dict) -> None:
     """Case 2 (D1): the latest release predates --device; its install.sh cannot run here (no node, no shasum)."""
     o = Origin(tmp, "old", pre_feature_files, genv)
@@ -449,6 +486,14 @@ def test_remote(tmp: Path, path: str, logs: Path, genv: dict) -> None:
               and "--port" in r.stderr and not calls(), out(r) + str(calls()))
     check("remote: 参数错误同样不触碰本地校验与安装器", not list(local.rglob("*.invoked")) and not (tmp / "pwned").exists())
 
+    # DEV_SPEC_KEEP_EXISTING is forwarded only as the fixed value 1; anything else never reaches the remote command
+    kb = Box(tmp, "box-remote-keep", o, path, logs)
+    r = remote(kb, "user@host", DEV_SPEC_KEEP_EXISTING="1")
+    check("remote: DEV_SPEC_KEEP_EXISTING=1 被带到远端命令", r.returncode == 0 and "DEV_SPEC_KEEP_EXISTING=1 " in calls()[0][2], str(calls()))
+    kb2 = Box(tmp, "box-remote-keep2", o, path, logs)
+    r = remote(kb2, "user@host", DEV_SPEC_KEEP_EXISTING="1; touch /tmp/x")
+    check("remote: 其他取值不进入远端命令", "KEEP_EXISTING" not in calls()[0][2] and "touch" not in calls()[0][2], str(calls()))
+
 
 def test_local_install_without_node(tmp: Path, path: str, logs: Path, genv: dict) -> None:
     """Case 11 (last part): the pre-install check of install.sh is the device subset and needs no node."""
@@ -491,6 +536,7 @@ def main() -> int:
         test_dependencies(tmp, bins, fake, logs, genv)
         test_remote(tmp, path, logs, genv)
         test_local_install_without_node(tmp, path, logs, genv)
+        test_review_followups(tmp, path, logs, genv)
         check("全程没有调用 sudo", not (logs / "sudo.log").exists(),
               (logs / "sudo.log").read_text() if (logs / "sudo.log").exists() else "")
     finally:
