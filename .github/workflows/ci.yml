@@ -17,12 +17,15 @@ jobs:
     name: validate (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      DEV_SPEC_REQUIRE_NODE: "1"      # node is installed below: a missing node must fail here, not skip
+      DEV_SPEC_NESTED_FULL: ${{ matrix.nested_full }}   # "1" on one job: also re-run the full suite with node hidden
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, python: "3.9" }    # declared minimum
-          - { os: ubuntu-latest, python: "3.13" }
+          - { os: ubuntu-latest, python: "3.13", nested_full: "1" }
           - { os: macos-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -41,4 +44,30 @@ jobs:
           git config --global user.name ci
           git config --global init.defaultBranch main
       - name: Validate (full suite)
+        run: bash scripts/validate.sh
+
+  # What a server has: Debian's own git + python3, no node, no shasum guarantee. The full suite must pass
+  # there with the node-dependent parts reported as unverified (DEV_SPEC_REQUIRE_NODE deliberately unset).
+  validate-debian:
+    name: validate (debian-${{ matrix.debian }})
+    runs-on: ubuntu-latest
+    container: debian:${{ matrix.debian }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: ["11", "12"]            # 11 ships python 3.9, the declared minimum
+    steps:
+      - name: Install git and python3
+        run: apt-get update && apt-get install -y git python3 ca-certificates   # before checkout: without git it would fetch a tarball with no history
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Prepare
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"   # the container user does not own the checkout
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+          git config --global init.defaultBranch main
+      - name: Validate (full suite, no node)
         run: bash scripts/validate.sh

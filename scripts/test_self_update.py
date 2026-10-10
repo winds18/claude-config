@@ -5,6 +5,7 @@ and a second clone that pushes new versions. Run: python3 scripts/test_self_upda
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -241,8 +242,37 @@ def main() -> int:
         r = sh(sys.executable, str(src / "scripts/dev_spec_install.py"), "rollback", "v0.1.0", "--claude-home", str(home2))
         check("rollback: link 模式（开发机）拒绝", r.returncode == 2 and "link" in r.stderr, r.stderr)
 
+        # ---------- default candidate validation, really executed, on a device without node / shasum ----------
+        spec = importlib.util.spec_from_file_location("server_tests", ROOT / "scripts/test_server_setup.py")
+        srv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(srv)
+        bins = srv.minimal_path(tmp / "bin")
+        src4, home4 = tmp / "src4", tmp / "home-device"
+        sh("git", "clone", "-q", str(origin), str(src4))
+        home4.mkdir()
+        sh(sys.executable, str(src4 / "scripts/dev_spec_install.py"), "install", "--apply", "--skip-version-check",
+           "--claude-home", str(home4), "--copy", "--channel", "main")
+
+        def device_update() -> subprocess.CompletedProcess:
+            env = {k: v for k, v in os.environ.items() if k != "DEV_SPEC_UPDATE_VALIDATE_CMD"}
+            env.update(PATH=str(bins), CLAUDE_CONFIG_DIR=str(home4))
+            return sh(sys.executable, str(home4 / "hooks/dev-spec/dev_spec_update.py"), "--now", env=env, inp="{}")
+
+        v7 = publish("v7-device")
+        device_update()
+        check("默认校验命令（无 node 设备）：候选通过后更新", state(home4).get("last_result") == "已更新"
+              and git(src4, "rev-parse", "HEAD") == v7 and "v7-device" in (home4 / "rules/dev-spec/01-core.md").read_text(),
+              str(state(home4)))
+        publish("v8-bad-hooks", {"hooks/hooks.json": "{ not json\n"})
+        device_update()
+        tail = "\n".join(state(home4).get("validation_tail", []))
+        check("默认校验命令被真实执行：静态检查必挂的候选被拒绝", state(home4).get("last_result", "").startswith("拒绝")
+              and "hooks/hooks.json" in tail and git(src4, "rev-parse", "HEAD") == v7
+              and "v8-bad-hooks" not in (home4 / "rules/dev-spec/01-core.md").read_text(), str(state(home4)))
+        check("默认校验命令拒绝后清理候选 worktree", git(src4, "worktree", "list").count("\n") == 0, git(src4, "worktree", "list"))
+
         # unreachable source
-        m2 = json.loads((home2 / ".dev-spec-manifest.json").read_text())
+        m2 =json.loads((home2 / ".dev-spec-manifest.json").read_text())
         m2["source"] = str(tmp / "missing")
         (home2 / ".dev-spec-manifest.json").write_text(json.dumps(m2))
         r = updater(home2, now=True)

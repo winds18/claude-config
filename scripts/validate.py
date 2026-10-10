@@ -370,6 +370,8 @@ def check_cross_refs() -> None:
                     rest = line[m.end():]
                     if re.match(r"\s+update\b", rest):
                         allowed, what = {"--claude-home"}, "install.sh update"
+                    elif re.match(r"\s+remote\b", rest):
+                        allowed, what = {"--port"}, "install.sh remote"
                     else:
                         allowed, what = inst, "install.sh（scripts/dev_spec_install.py）"
                     for flag in flags_after(line, m.end()):
@@ -397,7 +399,7 @@ def check_cross_refs() -> None:
 # ---------- 增量校验：改动 → 测试组 ----------
 
 # validate.sh 中测试组的规范顺序；static 总是运行，不在此列
-GROUPS = ("guard", "parallel", "integrate", "workflow", "self_update", "dispatch", "release", "validate", "install")
+GROUPS = ("guard", "parallel", "integrate", "workflow", "self_update", "dispatch", "release", "server", "validate", "install")
 # 规则按"生产者 → 所有消费它的测试"列出（含跨语言与跨脚本的消费者），先具体后宽泛，命中第一条即停。
 # 漏选比多选危险：--changed 报绿而全量失败等于假绿（见 docs/incidents.md 第三轮复核）。
 _RULES: list[tuple[str, tuple[str, ...]]] = [
@@ -406,10 +408,13 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
     (r"skills/parallel-dev/scripts/integrate\.py", ("integrate", "dispatch", "validate")),  # dispatch 消费 preflight；validate 解析 --help
     (r"workflows/.*", ("workflow", "dispatch", "validate")),                    # dispatch 契约测试；validate 解析 args 字段
     (r"scripts/test_workflows\.mjs", ("workflow", "dispatch")),                # dispatch 经 --validate-args 调用
-    (r"hooks/dev_spec_update\.py", ("self_update", "install")),
-    (r"scripts/dev_spec_install\.py|install\.sh", ("self_update", "install", "validate")),  # validate 解析安装器 --help
+    (r"hooks/dev_spec_update\.py", ("self_update", "install", "server")),     # server-setup 的重跑走已安装的更新器
+    (r"scripts/dev_spec_install\.py|install\.sh", ("self_update", "install", "validate", "server")),  # validate 解析安装器 --help；server-setup 直接调用安装器，install.sh remote 投递它
+    (r"scripts/server-setup\.sh", ("server",)),
+    (r"scripts/test_server_setup\.py", ("server", "self_update", "validate")),  # 后两者复用其中的最小 PATH 构造
     (r"hooks/hooks\.json", ("self_update", "install")),
-    (r"skills/dev-spec-dispatch/.*|scripts/test_dispatch\.py", ("dispatch",)),
+    (r"skills/dev-spec-dispatch/.*", ("dispatch",)),
+    (r"scripts/test_dispatch\.py", ("dispatch", "validate")),                  # test_validate 在无 node 环境下运行它
     (r"scripts/test_policy_guard\.py", ("guard",)),
     (r"scripts/test_parallel_guards\.py", ("parallel",)),
     (r"scripts/test_integrate\.py", ("integrate",)),
@@ -417,7 +422,7 @@ _RULES: list[tuple[str, tuple[str, ...]]] = [
     (r"scripts/release\.py|scripts/test_release\.py", ("release",)),
     (r"\.github/workflows/.*", ()),                                           # CI 定义：静态检查（YAML）即可，CI 自身会运行全量
     (r"scripts/validate\.py|scripts/test_validate\.py", ("validate",)),
-    (r"global/.*", ("install", "self_update")),                                # 安装往返与自更新测试写死了其中文件与内容
+    (r"global/.*", ("install", "self_update", "server")),                      # 安装往返、自更新与服务器部署测试写死了其中文件与内容
     (r"agents/.*", ("install", "validate")),                                   # 安装往返检查 implementer；validate 校验子代理类型
     (r"skills/[^/]+/SKILL\.md", ("validate",)),                               # test_validate 引用真实章节号
     (r".*\.md", ()),                                                          # 其余纯文档：静态检查即可
