@@ -135,6 +135,8 @@ def main() -> int:
         problems.append(f"tag {tag} 已存在")
     if prev and tuple(map(int, a.version.split("."))) <= tuple(int(x) for x in TAG.match(prev).groups()):
         problems.append(f"版本必须大于上一个发布 {prev}")
+    if prev and git("rev-parse", "HEAD^{tree}") == git("rev-parse", f"{prev}^{{tree}}"):
+        problems.append(f"自 {prev} 以来没有内容变化：不发布空版本（确认要发布的 PR 已经合入 main）")
     if git("symbolic-ref", "-q", "--short", "HEAD") != "main":
         problems.append("只能从 main 发布")
     if git("status", "--porcelain"):
