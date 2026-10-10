@@ -266,6 +266,13 @@ def run_verify(cmd: str) -> dict:
     return {"command": cmd, "exit_code": p.returncode, "tail": tail}
 
 
+def explicit_identity() -> bool:
+    """True when commits get an identity the user actually provided (user.*, author.*/committer.*, GIT_*_NAME/EMAIL,
+    $EMAIL …). user.useConfigOnly forbids git's synthesised user@hostname, which works but leaks the machine name."""
+    return all(git("-c", "user.useConfigOnly=true", "var", v).returncode == 0
+               for v in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"))
+
+
 def effective_base_ref(top: str) -> tuple[str, str]:
     home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
     for path in (os.path.join(top, ".claude/settings.local.json"), os.path.join(top, ".claude/settings.json"),
@@ -291,6 +298,9 @@ def cmd_preflight(args) -> dict:
     head = out("rev-parse", "--abbrev-ref", "HEAD")
     if head == "HEAD":
         blockers.append("当前处于 detached HEAD：先切到任务分支再提交检查点")
+    if not explicit_identity():
+        blockers.append("未显式设置 git 身份（user.name / user.email）：提交会失败，或带上自动生成的 用户名@主机名。"
+                        "先 git config user.name / user.email（服务器上常见）")
     base = args.base
     if git("cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
         blockers.append(f"基线 {base} 不是本仓库中的提交")

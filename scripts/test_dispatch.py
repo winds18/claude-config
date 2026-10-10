@@ -335,6 +335,67 @@ def main() -> int:
         r = review(f"{b2}..HEAD")
         check("回归: 文件名 types.ts 判为 contract", "contract" in r.get("lenses", []), json.dumps(r, ensure_ascii=False))
 
+        # ---------- env：交付与隔离条件 ----------
+        fakebin = tmp / "fake-tools"
+        fakebin.mkdir()
+        ss = fakebin / "ss"
+        # one line carries bytes that are not valid UTF-8 (process names are not guaranteed to be)
+        ss.write_bytes(b"#!/bin/sh\nprintf 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\\n'\n"
+                       b"printf 'LISTEN 0 128 [::]:8090 [::]:* \\377\\376\\n'\nprintf 'LISTEN 0 5 *:5432 *:*\\n'\n")
+        ss.chmod(0o755)
+        bare_home = tmp / "bare-home"
+        bare_home.mkdir()
+        env_env = {**env, "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}", "HOME": str(bare_home),
+                   "GIT_CONFIG_NOSYSTEM": "1", "SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}
+        for k in ("GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                  "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            env_env.pop(k, None)             # a developer machine may provide an identity through any of these
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=repo, capture_output=True, text=True, env=env_env)
+        e = json.loads(r.stdout or "{}")
+        check("env: 解析监听端口且不因非 UTF-8 输出崩溃", r.returncode == 0 and e.get("listening_ports") == [22, 5432, 8090], r.stdout + r.stderr)
+        check("env: 识别 SSH 会话与仓库", e.get("ssh_session") is True and e.get("in_repo") is True, r.stdout)
+        check("env: 仓库内显式配置的 git 身份被识别", e.get("git_identity") is True, r.stdout)
+        norepo = tmp / "no-identity"
+        norepo.mkdir()
+        subprocess.run(["git", "init", "-q", str(norepo)], check=True, env=env_env)
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=norepo, capture_output=True, text=True, env=env_env)
+        e = json.loads(r.stdout or "{}")
+        check("env: 未显式配置身份时报告无（不采信自动生成的 用户名@主机名）", e.get("git_identity") is False
+              and any("git 身份" in n for n in e.get("notes", [])), r.stdout)
+        # identity supplied only through the environment (common in CI) is explicit and must be accepted
+        ci_env = {**env_env, "GIT_AUTHOR_NAME": "ci", "GIT_AUTHOR_EMAIL": "ci@example.com",
+                  "GIT_COMMITTER_NAME": "ci", "GIT_COMMITTER_EMAIL": "ci@example.com"}
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=norepo, capture_output=True, text=True, env=ci_env)
+        check("env: 仅由环境变量提供的身份被接受", json.loads(r.stdout or "{}").get("git_identity") is True, r.stdout)
+        # prepare --commit must refuse BEFORE creating a checkpoint that would carry user@hostname
+        (norepo / "f.txt").write_text("x\n")
+        subprocess.run(["git", "-C", str(norepo), "add", "-A"], check=True, env=ci_env)
+        subprocess.run(["git", "-C", str(norepo), "commit", "-qm", "init"], check=True, env=ci_env)
+        subprocess.run(["git", "-C", str(norepo), "switch", "-q", "-c", "task"], check=True, env=ci_env)
+        (norepo / "contract.txt").write_text("c\n")
+        head0 = subprocess.run(["git", "-C", str(norepo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        r = subprocess.run([sys.executable, str(tool), "prepare", str(plan_file(two)), "--commit"], cwd=norepo,
+                           capture_output=True, text=True, env=env_env)
+        head1 = subprocess.run(["git", "-C", str(norepo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        check("prepare: 无显式身份时在提交检查点之前拒绝", r.returncode == 2 and "git 身份" in r.stderr and head0 == head1
+              and "已提交检查点" not in r.stderr, r.stderr)
+        # a failing `ss` (old iproute2 without -H) must fall through instead of reporting "no ports"
+        ss.write_text("#!/bin/sh\nexit 255\n")
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=repo, capture_output=True, text=True, env=env_env)
+        check("env: ss 失败时回退到其他工具而不是报告无端口", json.loads(r.stdout or "{}").get("port_source") != "ss", r.stdout[-300:])
+
+        # ---------- model：按包指定模型 ----------
+        mp = {"packages": [{"name": "a", "goal": "g", "owned": ["src/a/**"], "verify": ["t"], "model": "sonnet"},
+                           {"name": "b", "goal": "g", "owned": ["src/b/**"], "verify": ["t"], "model": "claude-opus-5-5"}]}
+        p = run("prepare", str(plan_file(mp)))
+        args = json.loads(p.stdout or "{}")
+        check("model: 合法取值透传到 args", [x.get("model") for x in args.get("packages", [])] == ["sonnet", "claude-opus-5-5"], p.stdout + p.stderr)
+        bad_model = {"packages": [{"name": "a", "goal": "g", "owned": ["src/a/**"], "verify": ["t"], "model": "gpt-x"}]}
+        p = run("check", str(plan_file(bad_model)), "--json")
+        check("model: 非法取值报错", p.returncode == 2 and "model" in p.stdout, p.stdout)
+        p = run("prepare", str(plan_file("| 包名 | 目标 | 负责 | 验收 | 模型 |\n| --- | --- | --- | --- | --- |\n| a | g | src/a/** | t | haiku |\n", "mm.md")))
+        check("model: Markdown 的「模型」列", json.loads(p.stdout or "{}").get("packages", [{}])[0].get("model") == "haiku", p.stdout + p.stderr)
+
         p = run("review-args", "--range", "nosuchref..HEAD")
         check("无效范围退出 2", p.returncode == 2 and not p.stdout.strip(), p.stdout + p.stderr)
 

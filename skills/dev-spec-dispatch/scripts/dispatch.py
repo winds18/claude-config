@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import os
 import re
 import subprocess
@@ -24,6 +25,7 @@ import sys
 from pathlib import Path
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MODELS = ("sonnet", "haiku", "opus", "fable", "inherit")
 DEFAULT_BRANCHES = ("main", "master")
 WT_EXCLUDE = ":(top,exclude).claude/worktrees"
 INTEGRATE = Path(__file__).resolve().parent.parent.parent / "parallel-dev" / "scripts" / "integrate.py"
@@ -39,6 +41,7 @@ COLUMNS = {
     "资源": "resources", "resources": "resources",
     "说明": "notes", "notes": "notes",
     "effort": "effort",
+    "模型": "model", "model": "model",
 }
 LIST_KEYS = {"owned", "forbidden", "verify"}
 EMPTY_CELL = {"", "-", "—", "无", "n/a", "N/A"}
@@ -214,6 +217,9 @@ def validate(plan: dict) -> dict:
             errors.append(f"{n}: forbidden 必须是数组")
         if p.get("effort") is not None and p.get("effort") not in EFFORTS:
             errors.append(f"{n}: effort 必须是 {'/'.join(EFFORTS)} 之一，当前 {p.get('effort')!r}")
+        m = p.get("model")
+        if m is not None and not (isinstance(m, str) and (m in MODELS or m.startswith("claude-"))):
+            errors.append(f"{n}: model 必须是 {'/'.join(MODELS)} 或完整模型 ID（claude-…），当前 {m!r}")
     valid = [p for p in pkgs if isinstance(p, dict)]
     for i in range(len(valid)):
         for j in range(i + 1, len(valid)):
@@ -241,7 +247,7 @@ def validate(plan: dict) -> dict:
 
 
 def normalized_args(plan: dict, base: str) -> dict:
-    keys = ("name", "goal", "owned", "forbidden", "setup", "verify", "resources", "notes", "effort")
+    keys = ("name", "goal", "owned", "forbidden", "setup", "verify", "resources", "notes", "effort", "model")
     args: dict = {"base": base}
     if plan.get("contract"):
         args["contract"] = plan["contract"]
@@ -322,6 +328,9 @@ def cmd_prepare(a) -> int:
         if name in DEFAULT_BRANCHES and not a.allow_default_branch:
             return fail(f"当前在默认分支 {name}：先建任务分支（git switch -c <task>）再提交检查点，"
                         "确需在默认分支提交时加 --allow-default-branch")
+        if not explicit_identity():
+            return fail("未显式设置 git 身份（user.name / user.email）：不提交检查点，否则提交会带上自动生成的 用户名@主机名。"
+                        "先 git config user.name / user.email")
         saved_index = out("write-tree")              # restore the user's staging if anything below fails
         restore = lambda: git("read-tree", saved_index) if saved_index else git("reset", "-q")
         add = git("add", "-A", "--", ":/", WT_EXCLUDE)  # never stage linked worktrees as gitlinks
@@ -440,6 +449,78 @@ def review_args(range_: str) -> dict:
     }
 
 
+def explicit_identity() -> bool:
+    """Same rule as integrate.py preflight: an identity the user provided, not git's synthesised user@hostname."""
+    return all(git("-c", "user.useConfigOnly=true", "var", v).returncode == 0
+               for v in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"))
+
+
+def listening_ports() -> tuple[list[int], str]:
+    """(ports, source). Tries ss (Linux), netstat (macOS/BSD: lists every user's sockets without root), then lsof
+    (current user only without root). A tool that is missing or fails falls through; source is "" when none worked."""
+    def run_tool(cmd: list[str]) -> str | None:
+        if not shutil.which(cmd[0]):
+            return None
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")   # process names may not be UTF-8
+        return p.stdout if p.returncode == 0 else None
+
+    text = run_tool(["ss", "-ltnH"])
+    if text is not None:
+        cols = (line.split() for line in text.splitlines())
+        return sorted({int(c[3].rsplit(":", 1)[-1]) for c in cols if len(c) >= 4 and c[3].rsplit(":", 1)[-1].isdigit()}), "ss"
+    text = run_tool(["netstat", "-an", "-p", "tcp"])
+    if text is not None:
+        found = set()
+        for line in text.splitlines():
+            c = line.split()
+            if len(c) >= 6 and c[-1] == "LISTEN" and c[3].rsplit(".", 1)[-1].isdigit():
+                found.add(int(c[3].rsplit(".", 1)[-1]))
+        return sorted(found), "netstat"
+    text = run_tool(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"])
+    if text is not None:
+        return sorted({int(m) for m in re.findall(r":(\d+) \(LISTEN\)", text)}), "lsof（仅当前用户的进程）"
+    return [], ""
+
+
+def environment() -> dict:
+    """Facts that decide how work can be delivered and isolated on this machine (local or an SSH host)."""
+    have = lambda tool: shutil.which(tool) is not None
+    ident = explicit_identity()
+    gh_ok = have("gh") and subprocess.run(["gh", "auth", "status"], capture_output=True, text=True).returncode == 0
+    ports, port_source = listening_ports()
+    in_repo = git("rev-parse", "--is-inside-work-tree").returncode == 0
+    remote = out("remote", "get-url", "origin") if in_repo else ""
+    notes = []
+    if not ident:
+        notes.append("未显式设置 git 身份：提交会失败，或带上自动生成的 用户名@主机名；先 git config user.name / user.email")
+    if not gh_ok:
+        notes.append("gh 不可用或未登录：本机不能开 PR / 读 CI / 发布；在这里止于提交与推送，PR 与发布由有 gh 的会话完成")
+    if not have("node"):
+        notes.append("没有 node：依赖 node 的检查在本机不会运行")
+    if not port_source:
+        notes.append("无法列出监听端口（ss / netstat / lsof 都不可用或失败）：分配端口前自行确认")
+    elif ports:
+        notes.append(f"已有 {len(ports)} 个端口在监听（来源 {port_source}）：给各包分配端口时避开它们")
+    return {"git_identity": ident, "gh": gh_ok, "node": have("node"), "docker": have("docker"),
+            "ssh_session": bool(os.environ.get("SSH_CONNECTION")), "in_repo": in_repo, "origin": remote,
+            "listening_ports": ports, "port_source": port_source, "notes": notes}
+
+
+def cmd_env(a) -> int:
+    e = environment()
+    if a.json:
+        print(json.dumps(e, ensure_ascii=False, indent=2))
+    else:
+        yn = lambda v: "有" if v else "无"
+        print(f"git 身份 {yn(e['git_identity'])} · gh {yn(e['gh'])} · node {yn(e['node'])} · docker {yn(e['docker'])}"
+              f" · {'SSH 会话' if e['ssh_session'] else '本机会话'}")
+        if e["listening_ports"]:
+            print("监听端口: " + ", ".join(map(str, e["listening_ports"][:40])) + (" …" if len(e["listening_ports"]) > 40 else ""))
+        for n in e["notes"]:
+            print(f"  注意：{n}")
+    return 0
+
+
 def cmd_review_args(a) -> int:
     if git("rev-parse", "--is-inside-work-tree").returncode != 0:
         return fail("不在 git 仓库内")
@@ -464,10 +545,12 @@ def main() -> int:
     p.add_argument("--allow-default-branch", action="store_true")
     p.add_argument("--out", help="args JSON 写入的文件（默认 stdout）")
     p.add_argument("--skip-secret-scan", action="store_true", help="跳过检查点提交前的密钥扫描（确认安全后才用）")
+    e = sub.add_parser("env", help="列出本机的交付与隔离条件：git 身份、gh、node、docker、已占用端口")
+    e.add_argument("--json", action="store_true")
     r = sub.add_parser("review-args", help="按改动规模生成 /dev-spec-review args")
     r.add_argument("--range", required=True, help="A..B 或 A（等价 A..HEAD）")
     a = ap.parse_args()
-    return {"check": cmd_check, "prepare": cmd_prepare, "review-args": cmd_review_args}[a.cmd](a)
+    return {"check": cmd_check, "prepare": cmd_prepare, "review-args": cmd_review_args, "env": cmd_env}[a.cmd](a)
 
 
 if __name__ == "__main__":

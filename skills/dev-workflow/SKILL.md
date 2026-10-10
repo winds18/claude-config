@@ -74,6 +74,7 @@ when_to_use: 用户要求实现新功能、跨多个模块/服务的改动、较
 - 推送到已有 PR 前查看标签（`gh pr view <n> --json labels`）：带 PR Steward 标签说明另有代理在管理，不推送、不启动监控，先请用户选择。
 - CI 失败先交 `test-triager` 归因（实现 / 环境 / 测试 / 既有），再修；桌面端发 PR 后用会话的 CI 状态栏（ccd_pr）读取结果，不自建轮询；Auto-fix 与 auto-merge 由用户决定（auto-merge 为 squash，且需仓库设置允许）。
 - 界面改动在桌面端用 Browser 预览做真实渲染检查（项目的 `.claude/launch.json`，自动验证默认开启）；没有预览配置时先补配置再验证。
+- 远程（SSH）会话：服务器往往没有 `gh`、没有显式 git 身份，端口也被长期服务占用。开工前用 `/dev-spec-dispatch` 的 `env` 看清条件；没有 `gh` 时在服务器上止于提交与推送，PR、CI 与发布由本机会话完成。
 - 范围外的问题不顺手改：宿主支持 `spawn_task` 时拆成独立任务，否则在交付说明中列出。
 
 ## 完成条件
