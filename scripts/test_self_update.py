@@ -207,6 +207,40 @@ def main() -> int:
         check("stable: 被移动的发布 tag 不会被跟随", "moved-tag" not in (home3 / "rules/dev-spec/01-core.md").read_text()
               and git(src3, "rev-parse", "HEAD") == t2, str(state(home3)))
 
+        # ---------- rollback / resume (device on stable, currently at v0.2.0 = t2) ----------
+        inst3 = lambda *a: sh(sys.executable, str(src3 / "scripts/dev_spec_install.py"), *a, "--claude-home", str(home3))
+        r = inst3("rollback", "v0.1.0")
+        rule3 = (home3 / "rules/dev-spec/01-core.md").read_text()
+        m3 = json.loads((home3 / ".dev-spec-manifest.json").read_text())
+        check("rollback: 内容回到目标版本", r.returncode == 0 and "rel-1" in rule3 and "rel-2" not in rule3, r.stdout + r.stderr)
+        check("rollback: 源仓库停在目标 tag（detached）", git(src3, "rev-parse", "HEAD") == t1
+              and sh("git", "-C", str(src3), "symbolic-ref", "-q", "HEAD").returncode != 0)
+        check("rollback: 自动更新已关闭且 SessionStart hook 移除", m3["options"]["auto_update"] is False
+              and "SessionStart" not in json.loads((home3 / "settings.json").read_text()).get("hooks", {}))
+        (home3 / "dev-spec-update.json").unlink(missing_ok=True)
+        updater(home3)
+        check("rollback: hook 模式不会自动升级回去", not (home3 / "dev-spec-update.json").exists())
+        updater(home3, now=True)
+        check("rollback: 即使手动检查，detached 也跳过", "不在有上游的分支上" in state(home3).get("last_result", "")
+              and git(src3, "rev-parse", "HEAD") == t1, str(state(home3)))
+        d = inst3("doctor", "--skip-version-check")
+        check("rollback: doctor 显示回滚状态与恢复方法", "已回滚到 v0.1.0" in d.stdout and "resume" in d.stdout, d.stdout)
+        r = inst3("resume")
+        m3 = json.loads((home3 / ".dev-spec-manifest.json").read_text())
+        check("resume: 切回原分支并重新开启自动更新", r.returncode == 0 and git(src3, "rev-parse", "HEAD") == t2
+              and m3["options"]["auto_update"] is True and "rel-2" in (home3 / "rules/dev-spec/01-core.md").read_text()
+              and not (home3 / "dev-spec-rollback.json").exists(), r.stdout + r.stderr)
+        r = inst3("rollback", "v9.9.9")
+        check("rollback: 不存在的 tag 拒绝", r.returncode == 2 and git(src3, "rev-parse", "HEAD") == t2, r.stderr)
+        r = inst3("rollback", "main")
+        check("rollback: 只接受发布 tag", r.returncode == 2, r.stderr)
+        (src3 / "README.md").write_text("local\n")
+        r = inst3("rollback", "v0.1.0")
+        check("rollback: 源仓库有改动时拒绝", r.returncode == 2 and git(src3, "rev-parse", "HEAD") == t2, r.stderr)
+        git(src3, "checkout", "--", "README.md")
+        r = sh(sys.executable, str(src / "scripts/dev_spec_install.py"), "rollback", "v0.1.0", "--claude-home", str(home2))
+        check("rollback: link 模式（开发机）拒绝", r.returncode == 2 and "link" in r.stderr, r.stderr)
+
         # unreachable source
         m2 = json.loads((home2 / ".dev-spec-manifest.json").read_text())
         m2["source"] = str(tmp / "missing")
