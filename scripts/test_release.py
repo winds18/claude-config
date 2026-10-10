@@ -116,6 +116,8 @@ def main() -> int:
         check("正式发布：创建 GitHub Release", "release create v0.1.0" in log.read_text(), log.read_text())
         r = rel("0.1.0", "--dry-run")
         check("同一版本不能重复发布", r.returncode == 2 and "已存在" in r.stderr, r.stderr)
+        r = rel("0.1.1")
+        check("自上个版本以来没有新提交 → 拒绝空发布", r.returncode == 2 and "空版本" in r.stderr and not g("tag", "--list", "v0.1.1"), r.stdout + r.stderr)
         commit("perf: 更快"); g("push", "-q")
         r = rel("0.0.9", "--dry-run")
         check("版本必须大于上一个发布", r.returncode == 2 and "大于" in r.stderr, r.stderr)
