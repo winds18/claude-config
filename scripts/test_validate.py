@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 results: list[tuple[str, bool, str]] = []
+skipped: list[str] = []             # opt-in cases that did not run; printed in the summary, never silent
 IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".tmp", "node_modules", "worktrees")
 
 
@@ -27,6 +28,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 def load_validate():
     spec = importlib.util.spec_from_file_location("validate_mod", ROOT / "scripts/validate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def load_server_tests():
+    """Shared helper: minimal_path() builds the allow-listed PATH (no node, no shasum) used for device scenarios."""
+    spec = importlib.util.spec_from_file_location("server_tests", ROOT / "scripts/test_server_setup.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -74,6 +83,8 @@ def test_injections(tmp: Path) -> None:
                 "\n```bash\nbash install.sh --copy --turbo --apply\n```\n", "--turbo", offset=2)
     expect_fail(tmp, "install.sh update 只接受 --claude-home", "README.md",
                 "\n运行 `bash install.sh update --apply` 立即更新。\n", "--apply", offset=1)
+    expect_fail(tmp, "install.sh remote 只接受 --port", "README.md",
+                "\n运行 `bash install.sh remote user@host --apply` 部署到服务器。\n", "--apply", offset=1)
     expect_fail(tmp, "未知 workflow 名", "docs/design.md",
                 "\n部署用 `/dev-spec-deploy` workflow。\n", "dev-spec-deploy", offset=1)
     expect_fail(tmp, "不存在的 §N", "global/rules/dev-spec/04-git-delivery.md",
@@ -130,6 +141,7 @@ def test_clean_and_valid_refs(tmp: Path) -> None:
         "",
         "- `integrate.py apply wt-a wt-b --verify \"pytest --maxfail 1\" --no-owner-check` 与 `integrate.py status --json`",
         "- `bash install.sh update --claude-home /tmp/x`；`bash install.sh --link --no-auto-update --apply`",
+        "- `bash install.sh remote user@host --port 2222`",
         "- `/dev-spec-review`、`/dev-spec-implement`、`/dev-spec-fakeskill`；路径 `~/.claude/dev-spec-backups/` 与 `hooks/dev-spec/x.py` 不是命令",
         "- `parallel-dev` §4、parallel-dev §6–7、`dev-workflow` 技能 §7、`skills/parallel-dev/SKILL.md` §2",
         "- `Agent(subagent_type: \"Explore\")`、`agentType: 'reviewer'`、`subagent_type: \"general-purpose\"`",
@@ -164,6 +176,22 @@ def test_regex_regressions(tmp: Path) -> None:
         check(f"回归: 识别「{text}」并报不存在的章节", r.returncode != 0 and "§9" in r.stdout, r.stdout[-600:])
 
 
+def test_rule_sections(tmp: Path) -> None:
+    # deleting a resident-rule section must fail unless the tracked list is edited too (incident 2026-10-10)
+    repo = copy_repo(tmp, "lost-section")
+    f = repo / "global/rules/dev-spec/01-core.md"
+    text = f.read_text()
+    a = text.index("## 授权与安全"); b = text.index("## 从失误中学习")
+    f.write_text(text[:a] + text[b:])
+    r = run_validate(repo)
+    check("拦截：常驻规则章节被删除", r.returncode != 0 and "授权与安全" in r.stdout and "不见了" in r.stdout, r.stdout[-600:])
+    repo = copy_repo(tmp, "new-section")
+    f = repo / "global/rules/dev-spec/01-core.md"
+    f.write_text(f.read_text() + "\n## 未登记的新章节\n\n- x\n")
+    r = run_validate(repo)
+    check("拦截：新增章节未登记", r.returncode != 0 and "未登记" in r.stdout, r.stdout[-600:])
+
+
 def test_select_groups() -> None:
     v = load_validate()
     sel = v.select_groups
@@ -171,19 +199,21 @@ def test_select_groups() -> None:
         ([], []),
         (["README.md", "docs/design.md"], []),
         (["agents/reviewer.md"], ["validate", "install"]),
-        (["global/CLAUDE.md"], ["self_update", "install"]),
+        (["global/CLAUDE.md"], ["self_update", "server", "install"]),
         (["skills/dev-workflow/SKILL.md"], ["validate"]),
         (["hooks/policy-guard.py"], ["guard", "parallel", "dispatch"]),
         (["hooks/worktree-guard.py"], ["parallel", "integrate"]),
         (["skills/parallel-dev/scripts/integrate.py"], ["integrate", "dispatch", "validate"]),
         (["workflows/dev-spec-review.js"], ["workflow", "dispatch", "validate"]),
         (["scripts/test_workflows.mjs"], ["workflow", "dispatch"]),
-        (["hooks/dev_spec_update.py"], ["self_update", "install"]),
-        (["scripts/dev_spec_install.py"], ["self_update", "validate", "install"]),
-        (["install.sh"], ["self_update", "validate", "install"]),
+        (["hooks/dev_spec_update.py"], ["self_update", "server", "install"]),
+        (["scripts/dev_spec_install.py"], ["self_update", "server", "validate", "install"]),
+        (["install.sh"], ["self_update", "server", "validate", "install"]),
+        (["scripts/server-setup.sh"], ["server"]),
+        (["scripts/test_server_setup.py"], ["self_update", "server", "validate"]),
         (["skills/dev-spec-dispatch/SKILL.md"], ["dispatch"]),
         (["skills/dev-spec-dispatch/scripts/x.py"], ["dispatch"]),
-        (["scripts/test_dispatch.py"], ["dispatch"]),
+        (["scripts/test_dispatch.py"], ["dispatch", "validate"]),
         (["scripts/test_policy_guard.py"], ["guard"]),
         (["scripts/test_parallel_guards.py"], ["parallel"]),
         (["scripts/test_integrate.py"], ["integrate"]),
@@ -205,7 +235,8 @@ def test_select_groups() -> None:
     test_group = {"scripts/test_policy_guard.py": "guard", "scripts/test_parallel_guards.py": "parallel",
                   "scripts/test_integrate.py": "integrate", "scripts/test_workflows.mjs": "workflow",
                   "scripts/test_self_update.py": "self_update", "scripts/test_dispatch.py": "dispatch",
-                  "scripts/test_validate.py": "validate", "scripts/test_release.py": "release"}
+                  "scripts/test_validate.py": "validate", "scripts/test_release.py": "release",
+                  "scripts/test_server_setup.py": "server"}
     tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split())
     tracked |= {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts
                 and ".claude" not in p.parts and "__pycache__" not in p.parts}
@@ -223,6 +254,18 @@ def test_select_groups() -> None:
                 if got is not None and group not in got:
                     missing.append(f"{ref} → 缺 {group}（{test} 引用了它）")
     check("映射覆盖测试脚本实际引用的全部文件（推导式）", not missing, "; ".join(missing))
+
+    # every group validate.sh can run is known to the mapping, in the same order, and every test script has a group
+    vsh = (ROOT / "scripts/validate.sh").read_text()
+    m = re.search(r'^all_groups="([^"]*)"', vsh, re.M)
+    check("validate.sh 的 all_groups 与 validate.py 的 GROUPS 一致", bool(m) and tuple(m.group(1).split()) == v.GROUPS
+          and "server" in v.GROUPS, f"{m and m.group(1)} vs {v.GROUPS}")
+    scripts = {f"scripts/{p.name}" for p in (ROOT / "scripts").glob("test_*") if p.is_file()}
+    check("每个测试脚本都登记了测试组并被 validate.sh 调用", scripts == set(test_group)
+          and all(Path(t).name in vsh for t in test_group), str(scripts ^ set(test_group)))
+    for f in ("scripts/server-setup.sh", "scripts/test_server_setup.py", "install.sh"):
+        got = sel([f])
+        check(f"{f} 的改动会运行 server 组", got is None or "server" in got, str(got))
 
 
 def test_changed_git(tmp: Path) -> None:
@@ -247,23 +290,126 @@ def test_changed_git(tmp: Path) -> None:
     out = sh.stdout
     check("validate.sh --changed 干净时只跑静态检查",
           sh.returncode == 0 and "[static]" in out and "已运行: static\n" in out
-          and not re.search(r"^\[(guard|parallel|integrate|workflow|self_update|dispatch|validate|install)\]", out, re.M)
+          and not re.search(r"^\[(guard|parallel|integrate|workflow|self_update|dispatch|release|server|validate|install)\]", out, re.M)
           and "已跳过:" in out and "install" in out.split("已跳过:")[1],
           out[-800:] + sh.stderr[-400:])
 
     (repo / "hooks/worktree-guard.py").write_text((repo / "hooks/worktree-guard.py").read_text() + "\n# touch\n")
     check("未提交改动纳入", groups() == "parallel integrate", groups())
     (repo / "scripts/test_dispatch.py").write_text("print('ok')\n")
-    check("未跟踪文件纳入", groups() == "parallel integrate dispatch", groups())
+    # test_dispatch.py also selects validate since test_validate.py runs it without node
+    check("未跟踪文件纳入", groups() == "parallel integrate dispatch validate", groups())
     g("add", "-A")
     g("commit", "-q", "-m", "change")
     check("提交后相对 HEAD 无改动", groups() == "", groups())
-    check("相对 HEAD~1 包含已提交改动", groups("HEAD~1") == "parallel integrate dispatch", groups("HEAD~1"))
+    check("相对 HEAD~1 包含已提交改动", groups("HEAD~1") == "parallel integrate dispatch validate", groups("HEAD~1"))
     (repo / ".gitignore").write_text((repo / ".gitignore").read_text() + "x/\n")
     check("无法归类时全量", groups() == "all", groups())
     check("无效基线时全量", groups("no-such-ref") == "all", groups("no-such-ref"))
     r = run_validate(repo, "--bogus")
     check("未知参数报用法错误", r.returncode == 2, r.stderr)
+
+
+NODE_GROUPS = ("workflow", "dispatch")
+DEVICE_GROUPS = ("guard", "install")
+
+
+def run_sh(*args: str, path: str | None = None, timeout: int = 300, **extra: str) -> subprocess.CompletedProcess:
+    """validate.sh of this checkout; DEV_SPEC_REQUIRE_NODE is only what the case sets (CI exports it globally)."""
+    env = {k: v for k, v in os.environ.items() if k != "DEV_SPEC_REQUIRE_NODE"}
+    env.update(extra)
+    if path:
+        env["PATH"] = path
+    return subprocess.run(["bash", str(ROOT / "scripts/validate.sh"), *args], cwd=ROOT, env=env,
+                          capture_output=True, text=True, errors="replace", timeout=timeout)
+
+
+def headers(out: str) -> list[str]:
+    return re.findall(r"^\[(\w+)\]", out, re.M)
+
+
+def test_snapshot(tmp: Path, bins: Path, srv) -> None:
+    """The install round trip compares directory snapshots; they must not depend on shasum (perl) and must
+    still see a one-byte change."""
+    d = tmp / "snap dir"
+    (d / "sub").mkdir(parents=True)
+    (d / "a b.txt").write_text("hello\n")
+    (d / "sub/x").write_text("1\n")
+    r1 = run_sh("--snapshot", str(d), path=str(bins))
+    (d / "a b.txt").write_text("hellp\n")                       # same name, same size, one byte differs
+    r2 = run_sh("--snapshot", str(d), path=str(bins))
+    l1, l2 = r1.stdout.splitlines(), r2.stdout.splitlines()
+    changed = [a for a, b in zip(l1, l2) if a != b]
+    check("快照: 无 shasum 时可用，且含空格的文件名完整", r1.returncode == 0 and r2.returncode == 0
+          and any(re.fullmatch(r"F \./a b\.txt \d+ 6", ln) for ln in l1) and "D ./sub" in l1
+          and any(ln.startswith("F ./sub/x ") for ln in l1), r1.stdout + r1.stderr)
+    check("快照: 同名文件改 1 字节即不同，且只有该行变化", len(l1) == len(l2) and len(changed) == 1
+          and changed[0].startswith("F ./a b.txt "), f"{l1}\n{l2}")
+    nocksum = srv.minimal_path(tmp / "bin-nocksum", exclude=("cksum",))
+    r = run_sh("--snapshot", str(d), path=str(nocksum))
+    check("快照: 哈希工具不可用时非 0，不产出空哈希", r.returncode != 0 and not re.search(r"^F \./a b\.txt\s*$", r.stdout, re.M),
+          f"rc={r.returncode} {r.stdout} {r.stderr}")
+    r = run_sh("--device", path=str(nocksum))
+    check("哈希工具不可用时安装往返校验失败", r.returncode != 0 and "通过" not in (r.stdout.strip().splitlines() or [""])[-1],
+          f"rc={r.returncode} {r.stdout[-400:]} {r.stderr[-400:]}")
+
+
+def test_device_mode(bins: Path) -> None:
+    r = run_sh("--device", path=str(bins), DEV_SPEC_REQUIRE_NODE="1")       # D2: no node-dependent group is selected
+    out = r.stdout
+    last = out.strip().splitlines()[-1] if out.strip() else ""
+    check("--device: 无 node 且 REQUIRE_NODE=1 时仍通过，只跑 static/guard/install",
+          r.returncode == 0 and headers(out) == ["static", *DEVICE_GROUPS], out[-800:] + r.stderr[-400:])
+    skipped = out.split("已跳过:")[1].splitlines()[0].split() if "已跳过:" in out else []
+    check("--device: 结尾标明设备模式与被跳过的组，不声称全部通过",
+          "设备模式" in last and "全部校验通过" not in out and "未验证" not in out
+          and set(skipped) == {"parallel", "integrate", "workflow", "self_update", "dispatch", "release", "server", "validate"},
+          out[-600:])
+    for args in (("--device", "--changed"), ("--changed", "--device"), ("--device", "extra"), ("--bogus",),
+                 ("--changed", "HEAD", "extra"), ("--snapshot",)):
+        r = run_sh(*args)
+        check(f"用法错误退出 2：{' '.join(args)}", r.returncode == 2 and "--device" in r.stderr and "--changed" in r.stderr
+              and "[static]" not in r.stdout, f"rc={r.returncode} {r.stdout[-200:]} {r.stderr}")
+
+
+def test_without_node(bins: Path) -> None:
+    """D3. The full no-node run re-enters this file through the validate group; DEV_SPEC_VALIDATE_NESTED
+    stops the recursion there (the inner run still executes every other case)."""
+    env = {k: v for k, v in os.environ.items() if k != "DEV_SPEC_REQUIRE_NODE"}
+    env["PATH"] = str(bins)
+    dispatch = [sys.executable, str(ROOT / "scripts/test_dispatch.py")]
+    r = subprocess.run(dispatch, env={**env, "DEV_SPEC_REQUIRE_NODE": "1"}, capture_output=True, text=True, errors="replace")
+    check("无 node + REQUIRE_NODE=1：dispatch 测试失败", r.returncode != 0 and "node" in r.stdout, r.stdout[-400:])
+    r = run_sh(path=str(bins), DEV_SPEC_REQUIRE_NODE="1")
+    check("无 node + REQUIRE_NODE=1：全量校验失败并指出 workflow 与 dispatch",
+          r.returncode != 0 and "node" in r.stderr and all(g in r.stderr for g in NODE_GROUPS)
+          and "通过" not in (r.stdout.strip().splitlines() or [""])[-1], f"rc={r.returncode} {r.stdout[-300:]} {r.stderr}")
+    r = run_sh("--changed", "no-such-ref", path=str(bins), DEV_SPEC_REQUIRE_NODE="1")
+    check("无 node + REQUIRE_NODE=1：--changed 选中依赖 node 的组时同样失败", r.returncode != 0 and "node" in r.stderr, r.stderr)
+    r = subprocess.run(dispatch, env=env, capture_output=True, text=True, errors="replace")
+    check("无 node：dispatch 测试通过且契约段的跳过可见", r.returncode == 0
+          and re.search(r"^\s*SKIP .*契约.*node", r.stdout, re.M) is not None and "未验证" in r.stdout.splitlines()[-1],
+          r.stdout[-400:])
+    if os.environ.get("DEV_SPEC_VALIDATE_NESTED") or not shutil.which("node"):
+        # either we are inside that full run already, or this run itself has no node (Debian CI, a server):
+        # the enclosing run is the no-node full validation, and its own summary is what gets checked or read
+        print("  （本次运行本身没有 node 或已在嵌套中：无 node 的全量校验即外层这一次，不再递归）")
+        return
+    if os.environ.get("DEV_SPEC_NESTED_FULL") != "1":
+        # it re-runs the whole suite (about two extra minutes); one CI job sets the variable
+        skipped.append("无 node 的嵌套全量校验（设 DEV_SPEC_NESTED_FULL=1 运行；CI 的 ubuntu py3.13 任务会跑）")
+        return
+    r = run_sh(path=str(bins), timeout=1500, DEV_SPEC_VALIDATE_NESTED="1")
+    out = r.stdout
+    unverified = next((ln for ln in out.splitlines() if ln.startswith("未验证（缺 node）")), "")
+    ran = out.split("已运行:")[1].splitlines()[0].split() if "已运行:" in out else []
+    check("无 node：全量校验通过", r.returncode == 0, out[-1500:] + r.stderr[-800:])
+    check("无 node：workflow 与 dispatch 契约段的跳过可见",
+          re.search(r"^\[workflow\].*跳过.*node", out, re.M) is not None
+          and re.search(r"^\s*SKIP .*契约.*node", out, re.M) is not None, out[-1500:])
+    check("无 node：汇总列出未验证项而不是全部校验通过", all(g in unverified for g in NODE_GROUPS)
+          and "全部校验通过" not in out and "workflow" not in ran and "dispatch" in ran and "server" in ran,
+          "\n".join(out.strip().splitlines()[-4:]))
 
 
 def main() -> int:
@@ -272,12 +418,20 @@ def main() -> int:
         test_clean_and_valid_refs(tmp)
         test_injections(tmp)
         test_regex_regressions(tmp)
+        test_rule_sections(tmp)
         test_select_groups()
         test_changed_git(tmp)
+        srv = load_server_tests()
+        bins = srv.minimal_path(tmp / "bin")
+        test_snapshot(tmp, bins, srv)
+        test_device_mode(bins)
+        test_without_node(bins)
     failed = [r for r in results if not r[1]]
     for name, ok, detail in failed:
         print(f"FAIL {name}: {detail}")
-    print(f"validate: {len(results) - len(failed)}/{len(results)} passed")
+    for note in skipped:
+        print(f"  SKIP {note}")
+    print(f"validate: {len(results) - len(failed)}/{len(results)} passed" + (f"，{len(skipped)} 项未运行" if skipped else ""))
     return 1 if failed else 0
 
 

@@ -8,8 +8,37 @@
 #   bash install.sh resume               # 结束回滚：切回原分支、重新开启自动更新
 #   bash install.sh uninstall --apply    # 卸载并恢复备份
 #   bash install.sh --claude-home DIR    # 安装到其他配置目录（测试/多账号）
+#   bash install.sh remote user@host [--port N]
+#                                        # 把规范装到服务器（只需 git + python3 ≥3.9）：经 ssh 在对方执行
+#                                        # scripts/server-setup.sh；重复执行即更新。本机设置的 DEV_SPEC_REPO_URL 与
+#                                        # DEV_SPEC_KEEP_EXISTING=1 会带过去
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "${1:-}" == remote ]]; then
+  shift
+  usage() { echo "用法: install.sh remote <user@host> [--port N]" >&2; exit 2; }
+  host="" port=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || usage; port="$2"; shift 2 ;;
+      -*) echo "主机名不能以 - 开头：$1" >&2; usage ;;      # 否则会被 ssh 当作选项（如 -oProxyCommand=…）
+      *) [[ -z "$host" ]] || usage; host="$1"; shift ;;
+    esac
+  done
+  [[ -n "$host" ]] || usage
+  remote_cmd="bash -s"
+  if [[ -n "${DEV_SPEC_REPO_URL:-}" ]]; then
+    # 远端命令由对方的登录 shell 解析：值放进单引号，内部的单引号写成 '\''，空格与引号原样到达
+    quote="'" escaped="'\\''"
+    remote_cmd="DEV_SPEC_REPO_URL='${DEV_SPEC_REPO_URL//$quote/$escaped}' bash -s"
+  fi
+  # 只转发固定取值，不把任意文本带进远端命令
+  [[ "${DEV_SPEC_KEEP_EXISTING:-}" == 1 ]] && remote_cmd="DEV_SPEC_KEEP_EXISTING=1 $remote_cmd"
+  # 脚本走 stdin，对方无需先有本仓库；ssh 的退出码就是本命令的退出码
+  exec ssh ${port:+-p "$port"} -- "$host" "$remote_cmd" < "$here/scripts/server-setup.sh"
+fi
+
 command -v python3 >/dev/null || { echo "需要 python3 (3.9+)" >&2; exit 1; }
 case "${1:-}" in
   update)
@@ -20,6 +49,7 @@ case "${1:-}" in
     done
     CLAUDE_CONFIG_DIR="$home" exec python3 "$here/hooks/dev_spec_update.py" --now --verbose ;;
   uninstall|doctor|rollback|resume) ;;
-  *) bash "$here/scripts/validate.sh" >/dev/null || { echo "源码校验失败，先运行 bash scripts/validate.sh 查看详情" >&2; exit 1; } ;;
+  # 安装前的源码校验用设备子集（静态检查 + 守卫 + 安装往返），不需要 node；全量校验是 CI 与发布的事
+  *) bash "$here/scripts/validate.sh" --device >/dev/null || { echo "源码校验失败，先运行 bash scripts/validate.sh --device 查看详情" >&2; exit 1; } ;;
 esac
 exec python3 "$here/scripts/dev_spec_install.py" "$@"

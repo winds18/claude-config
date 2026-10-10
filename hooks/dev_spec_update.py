@@ -9,7 +9,8 @@ Order of operations — the new version is validated *before* anything live chan
      repo, local unpushed commits, a diverged history or another branch); a local branch that
      already contains the target counts as up to date;
   4. optionally require the new tip to carry a valid signature;
-  5. check the new tip out into a temporary worktree and run its validation suite there;
+  5. check the new tip out into a temporary worktree and run its device validation there
+     (`validate.sh --device`: static checks, guard tests, install round trip; no node needed);
   6. only if that passes: `merge --ff-only`, then re-run the installer with the options
      recorded at install time (one-time migrations such as retiring legacy rules are not repeated).
 
@@ -164,7 +165,8 @@ def update(manifest: dict, opts: dict, verbose: bool) -> int:
         add = git(repo, "worktree", "add", "--detach", "--quiet", str(cand), remote)
         if add.returncode != 0:
             return finish(f"失败：无法检出候选版本（{add.stderr.strip()[:200]}）", verbose)
-        cmd = os.environ.get("DEV_SPEC_UPDATE_VALIDATE_CMD", "bash scripts/validate.sh")
+        # device subset (static + guard + install round trip): needs no node; the full suite gates the release in CI
+        cmd = os.environ.get("DEV_SPEC_UPDATE_VALIDATE_CMD", "bash scripts/validate.sh --device")
         v = subprocess.run(cmd, shell=True, cwd=cand, capture_output=True, text=True, timeout=900)
         if v.returncode != 0:
             tail = (v.stdout + v.stderr).strip().splitlines()[-8:]

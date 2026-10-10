@@ -1,0 +1,24 @@
+# 常驻规则的章节清单（文件<TAB>标题）。validate.py 要求它与实际内容完全一致：
+# 章节消失或新增都必须同时修改本文件，防止规则被无意删除（见 docs/incidents.md 2026-10-10）。
+global/CLAUDE.md	# 个人全局指令
+global/CLAUDE.md	# Compact instructions
+global/rules/dev-spec/01-core.md	# 核心约定
+global/rules/dev-spec/01-core.md	## 自主推进
+global/rules/dev-spec/01-core.md	## 上下文经济
+global/rules/dev-spec/01-core.md	## 授权与安全
+global/rules/dev-spec/01-core.md	## 从失误中学习
+global/rules/dev-spec/02-engineering.md	# 工程约定
+global/rules/dev-spec/02-engineering.md	## 任务分级（开工先定档，流程重量随档位）
+global/rules/dev-spec/02-engineering.md	## 质量底线
+global/rules/dev-spec/02-engineering.md	## 测试与验证
+global/rules/dev-spec/02-engineering.md	## 目录与临时文件
+global/rules/dev-spec/03-parallel.md	# 并行协作约定
+global/rules/dev-spec/03-parallel.md	## 选择机制（取最轻的可行项）
+global/rules/dev-spec/03-parallel.md	## 写入归属（硬规则；worktree 内由 hook 强制）
+global/rules/dev-spec/03-parallel.md	## 集成与恢复
+global/rules/dev-spec/04-git-delivery.md	# Git 与交付
+global/rules/dev-spec/04-git-delivery.md	## Git
+global/rules/dev-spec/04-git-delivery.md	## 文档与版本（随阶段递进，不过度文档化）
+global/rules/dev-spec/04-git-delivery.md	## PR 与 CI
+global/rules/dev-spec/04-git-delivery.md	## 完成条件
+global/rules/dev-spec/04-git-delivery.md	## 交付说明格式

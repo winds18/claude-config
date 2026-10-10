@@ -4,39 +4,64 @@
 #   bash scripts/validate.sh                    # 全量
 #   bash scripts/validate.sh --changed [<base>] # 静态检查 + 相对 base（默认 HEAD，含未提交/未跟踪）受影响的测试组；
 #                                               # 无法归类的改动或无法取得改动时跑全量（映射见 validate.py select_groups）
+#   bash scripts/validate.sh --device           # 设备上安装/自动更新前的校验：静态检查 + guard + install。
+#                                               # 只需 bash、git、python3 与 POSIX 工具（不需要 node）；其余组由 CI 在发布前验证
+# 没有 node 时 workflow 组与 dispatch 的跨语言契约段跳过并在结尾列为未验证；DEV_SPEC_REQUIRE_NODE=1（CI）时改为失败。
+# （--snapshot <目录> 只输出该目录的快照，供 test_validate.py 检验快照本身。）
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-all_groups="guard parallel integrate workflow self_update dispatch release validate install"
+all_groups="guard parallel integrate workflow self_update dispatch release server validate install"
+device_groups="guard install"
+usage() { echo "用法: validate.sh [--device | --changed [<base>]]" >&2; exit 2; }
+fail() { echo "  FAIL $*" >&2; exit 1; }
+
+# 目录快照：每个条目的类型、路径与内容校验和。用 cksum（POSIX，Debian 与 macOS 都自带）而不是 shasum（依赖 perl）；
+# 校验和算不出来时整个快照失败，不能留下空哈希让两次快照"相等"。
+snapshot() { (cd "$1" && find . -not -path './dev-spec-backups*' -not -name .settings.orig | sort | while IFS= read -r f; do
+  if [[ -L "$f" ]]; then echo "L $f"; elif [[ "$f" == ./settings.json ]]; then echo "F $f (语义比较)"
+  elif [[ -f "$f" ]]; then sum="$(cksum < "$f")" && [[ -n "$sum" ]] || { echo "  FAIL 无法计算校验和（需要 cksum）：$f" >&2; exit 1; }; echo "F $f $sum"
+  else echo "D $f"; fi; done); }
+
 mode=all base=HEAD
 case "${1:-}" in
   "") ;;
-  --changed) mode=changed; base="${2:-HEAD}"; [[ $# -le 2 ]] || { echo "用法: validate.sh [--changed [<base>]]" >&2; exit 2; } ;;
-  *) echo "用法: validate.sh [--changed [<base>]]" >&2; exit 2 ;;
+  --changed) mode=changed; base="${2:-HEAD}"; [[ $# -le 2 && "$base" != -* ]] || usage ;;
+  --device) mode=device; [[ $# -eq 1 ]] || usage ;;
+  --snapshot) [[ $# -eq 2 ]] || usage; snapshot "$2"; exit ;;
+  *) usage ;;
 esac
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-fail() { echo "  FAIL $*" >&2; exit 1; }
+tmp="$(mktemp -d)" finished=0
+# 清理临时目录并保住退出码：bash 3.2（macOS）在"未定义变量"中止时带着 0 进入 EXIT trap，没走到结尾的 0 改成 1
+trap 'rc=$?; rm -rf "$tmp"; if [[ $rc == 0 && $finished != 1 ]]; then rc=1; fi; exit "$rc"' EXIT
+
+case $mode in
+  changed) sel="$(python3 "$root/scripts/validate.py" --changed-groups "$base")"; [[ "$sel" == all ]] && sel="$all_groups" ;;
+  device) sel="$device_groups" ;;
+  *) sel="$all_groups" ;;
+esac
+ran="" skipped="" unverified=""
+want() { [[ " $sel " == *" $1 "* ]]; }
+
+# 依赖 node 的部分：整个 workflow 组，以及 dispatch 组里的跨语言契约段（由 test_dispatch.py 自己跳过或失败）
+if ! command -v node >/dev/null 2>&1; then
+  if want workflow; then unverified="workflow"; fi
+  if want dispatch; then unverified="${unverified:+${unverified}、}dispatch 的跨语言契约段"; fi
+  if [[ -n "$unverified" && "${DEV_SPEC_REQUIRE_NODE:-}" == 1 ]]; then
+    fail "未安装 node 而 DEV_SPEC_REQUIRE_NODE=1：无法验证 $unverified"
+  fi
+fi
 
 echo "[static] 静态检查（含交叉引用）"
 python3 "$root/scripts/validate.py"
 
-if [[ $mode == changed ]]; then
-  sel="$(python3 "$root/scripts/validate.py" --changed-groups "$base")"
-  [[ "$sel" == all ]] && sel="$all_groups"
-else
-  sel="$all_groups"
-fi
-ran="" skipped=""
-want() { [[ " $sel " == *" $1 "* ]]; }
 # group <名称> <说明> <命令…>：被选中则运行，否则记为跳过
 group() {
   local name="$1" label="$2"; shift 2
-  if want "$name"; then echo "[$name] $label"; "$@"; ran="$ran $name"; else skipped="$skipped $name"; fi
+  if ! want "$name"; then skipped="$skipped $name"
+  elif [[ $name == workflow && "$unverified" == workflow* ]]; then echo "[$name] 跳过：未安装 node，$label 未验证"
+  else echo "[$name] $label"; "$@"; ran="$ran $name"; fi
 }
 
-run_workflow_tests() {
-  if command -v node >/dev/null; then node "$root/scripts/test_workflows.mjs"; else echo "  跳过：未安装 node（workflow 未验证）"; fi
-}
 run_dispatch_tests() {
   python3 "$root/scripts/test_dispatch.py"   # 缺失即失败：文件已入库，兜底只会掩盖测试被删
 }
@@ -54,13 +79,12 @@ seed() {
   cp "$h/settings.json" "$h/.settings.orig"
 }
 inst() { python3 "$root/scripts/dev_spec_install.py" "$@" --skip-version-check >/dev/null; }
-snapshot() { (cd "$1" && find . -not -path './dev-spec-backups*' -not -name .settings.orig | sort | while read -r f; do
-  if [[ -L "$f" ]]; then echo "L $f"; elif [[ "$f" == ./settings.json ]]; then echo "F $f (语义比较)"; elif [[ -f "$f" ]]; then echo "F $f $(shasum < "$f" | cut -c1-12)"; else echo "D $f"; fi; done); }
 
 roundtrip() {
   local mode="$1" h="$tmp/home-$1"
   seed "$h"
-  local before; before="$(snapshot "$h")"
+  local before after
+  before="$(snapshot "$h")" || fail "$mode: 无法生成安装前快照"
   inst install "--$mode" --claude-home "$h"
   [[ ! -e "$h/.dev-spec-manifest.json" ]] || fail "$mode: 预览写入了文件"
 
@@ -99,7 +123,8 @@ PY
   mv "$h/hooks/dev-spec.off" "$h/hooks/dev-spec"
 
   inst uninstall --apply --claude-home "$h"
-  [[ "$(snapshot "$h")" == "$before" ]] || { diff <(echo "$before") <(snapshot "$h") >&2; fail "$mode: 卸载后未还原"; }
+  after="$(snapshot "$h")" || fail "$mode: 无法生成卸载后快照"
+  [[ "$after" == "$before" ]] || { diff <(echo "$before") <(echo "$after") >&2 || true; fail "$mode: 卸载后未还原"; }
   python3 -c "import json,sys; assert json.load(open(sys.argv[1]))==json.load(open(sys.argv[2]))" "$h/settings.json" "$h/.settings.orig" \
     || fail "$mode: settings 未还原"
   echo "  $mode 模式: 通过"
@@ -113,15 +138,25 @@ install_roundtrips() {
 group guard "守卫行为测试" python3 "$root/scripts/test_policy_guard.py"
 group parallel "并行守卫测试（真实 git worktree）" python3 "$root/scripts/test_parallel_guards.py"
 group integrate "集成脚本测试（真实 git worktree）" python3 "$root/scripts/test_integrate.py"
-group workflow "workflow 脚本测试（模拟运行时）" run_workflow_tests
+group workflow "workflow 脚本测试（模拟运行时）" node "$root/scripts/test_workflows.mjs"
 group self_update "自我更新端到端测试（bare origin + copy/link 安装）" python3 "$root/scripts/test_self_update.py"
 group dispatch "dispatch 测试" run_dispatch_tests
 group release "发布闸门测试（bare origin + 模拟 gh）" python3 "$root/scripts/test_release.py"
-group validate "静态检查自测（注入坏引用、增量映射）" python3 "$root/scripts/test_validate.py"
+group server "服务器部署测试（server-setup.sh、install.sh remote；bare origin + 模拟 ssh）" python3 "$root/scripts/test_server_setup.py"
+group validate "静态检查自测（注入坏引用、增量映射、设备模式与无 node）" python3 "$root/scripts/test_validate.py"
 group install "安装往返（复制 / 软链接）" install_roundtrips
 
 echo "已运行: static${ran}"
 echo "已跳过:${skipped:- 无}"
-if [[ $mode == all || "$sel" == "$all_groups" ]]; then echo "全部校验通过"
+if [[ -n "$unverified" ]]; then
+  echo "未验证（缺 node）: ${unverified}"
+  pending="；上述未验证部分需在装有 node 的环境或 CI 中确认"
+else
+  pending=""
+fi
+if [[ $mode == device ]]; then echo "设备模式校验通过（只含 static ${device_groups}；已跳过的组由 CI 在发布前验证）"
+elif [[ $mode == all || "$sel" == "$all_groups" ]]; then
+  if [[ -z "$unverified" ]]; then echo "全部校验通过"; else echo "已运行的校验通过${pending}"; fi
 elif [[ -z "$sel" ]]; then echo "相对 ${base} 无受影响的测试组：只运行了静态检查（不等于已验证功能；提交前跑全量）"
-else echo "增量校验通过（相对 ${base}）；提交前与发布前仍需全量"; fi
+else echo "增量校验通过（相对 ${base}）；提交前与发布前仍需全量${pending}"; fi
+finished=1

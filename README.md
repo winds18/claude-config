@@ -16,7 +16,7 @@ global/
     04-git-delivery.md      Git、PR 入口、完成条件、交付说明格式
 skills/                     按需加载的流程（细节只维护在这里）
   dev-workflow/             L 档五阶段、质量表、测试矩阵、复核、PR 与 CI
-  parallel-dev/             派发前检查、工作包、workflow 派发、集成与冲突、接管、代理团队、跨仓
+  parallel-dev/             派发前检查、工作包、三阶段派发、集成与冲突、接管、桌面端多会话、跨仓
     scripts/integrate.py    确定性集成：preflight / status / plan / apply / cleanup
   dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → workflow 参数；复核规模计算
     scripts/dispatch.py     check / prepare / review-args
@@ -32,7 +32,9 @@ hooks/
   hooks.json                守卫的 settings 片段
 scripts/                    安装器（link/copy/doctor/uninstall）、validate.sh 与各项测试
   release.py                发布闸门：CI 通过的 main 提交 → tag + GitHub Release
-.github/workflows/ci.yml    CI：Linux（Python 3.9 / 3.13）与 macOS 上跑全量校验
+  server-setup.sh           在服务器上安装/更新（只需 git 与 python3）
+  rule-sections.txt         常驻规则章节清单：章节增删必须同时改它，防止规则被无意删除
+.github/workflows/ci.yml    CI：Ubuntu（Python 3.9 / 3.13）、macOS，以及只有 git + python3 的 Debian 12 / 13 容器
 docs/
   design.md                 设计取舍与依据
   incidents.md              事件记录：每条规则修订的来源
@@ -89,7 +91,7 @@ bash install.sh uninstall --apply
 
 1. `git fetch` 安装时记录的规范仓库。默认 **stable 通道只跟随发布 tag（vX.Y.Z）**，合入 `main` 不会推到其他设备；`--channel main` 改为跟随主分支（只建议用于开发机）。已发布的 tag 被移动时拒绝跟随；
 2. 只接受**干净的 fast-forward**：仓库有未提交改动、有未推送的本地提交、历史分叉或不在跟踪分支上时一律跳过（不会碰你正在开发的内容）；
-3. 把新版本检出到临时 worktree，跑完整的 `scripts/validate.sh`，**不通过就保持当前版本**；
+3. 把新版本检出到临时 worktree，跑设备端校验 `scripts/validate.sh --device`（静态检查、守卫测试、安装往返；只需 git 与 python3，几秒完成），**不通过就保持当前版本**。完整校验由 CI 在发布前完成；
 4. 通过后 fast-forward 并按安装时记住的选项重装；重装失败则把源仓库退回原版本。
 
 | 命令 / 选项 | 作用 |
@@ -107,6 +109,24 @@ bash install.sh uninstall --apply
 
 安全提示：自动更新会在每台设备上执行仓库里的 hook 代码，等同于信任该仓库的所有推送者。建议给 `main` 开启分支保护；对安全要求高的设备使用 `--require-signed`。
 
+## 服务器（Debian，桌面端 SSH 会话）
+
+桌面端的 SSH 会话在远程主机上运行 Claude，读取的是**远程主机**的 `~/.claude`，所以每台服务器要各装一份。服务器只需要 git 和 python3（≥3.9，即 Debian 11 及以上），不需要 node。
+
+```bash
+bash install.sh remote user@host
+```
+
+它经 ssh 在服务器上执行 `scripts/server-setup.sh`：克隆仓库到 `~/.local/share/claude-config`，停在最新发布版本，以 copy 模式安装并开启自动更新（之后随发布 tag 自动升级）。可重复执行；缺依赖时只提示 `sudo apt-get install -y git python3`，不会自行提权。也可以登录服务器后直接运行该脚本。
+
+| 选项 | 作用 |
+| --- | --- |
+| `--port N` | ssh 端口 |
+| `DEV_SPEC_KEEP_EXISTING=1` | 环境变量：首次安装不接管服务器上已有的 `CLAUDE.md`、不退役已有规则（默认会接管并备份，可用 uninstall 还原） |
+| `DEV_SPEC_DIR` / `DEV_SPEC_REPO_URL` | 环境变量：克隆位置 / 仓库地址（在服务器上直接运行脚本时使用） |
+
+退出码非 0 表示安装失败、状态检查有问题，或更新被拒绝。
+
 ## 在项目中使用
 
 1. 新项目或首次并行前运行 `/project-bootstrap`：项目 CLAUDE.md（只含验证过的命令）、`.claude/settings.json`、`.worktreeinclude`、gitignore 条目。
@@ -123,9 +143,9 @@ bash install.sh uninstall --apply
 | 交付 | 完成条件 + 交付说明；PR/CI 见 `dev-workflow` §7 |
 
 4. 会话被压缩或恢复后，先 `integrate.py status` 从 git 恢复并行状态。
-5. 有可验证终态的长任务，可用 `/goal <验收条件>` 让独立评估器判定完成；多视角评审或竞争性假设排障可启用代理团队（实验特性）。
+5. 有可验证终态的长任务，可用 `/goal <验收条件>` 让独立评估器判定完成；各自要长时间推进的大块工作用桌面端并行会话（各自 worktree 与 PR）。
 
-dynamic workflow 需在 `/config` 中开启（部分计划默认关闭）；不可用时规范自动回退为手动派发子代理。
+Workflow 工具不可用时（桌面端会话目前常见），按 `parallel-dev` 的手动三阶段进行，效果等价。代理团队只在终端 CLI 可用，本规范不依赖它。
 
 ## 守卫行为
 
@@ -155,7 +175,7 @@ dynamic workflow 需在 `/config` 中开启（部分计划默认关闭）；不�
 bash scripts/validate.sh
 ```
 
-迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前与自动更新时跑全量。
+迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前跑全量。没有 node 的机器上，依赖 node 的两段会跳过并在结尾标为未验证（CI 中强制要求）。
 
 发布：改动经 PR 合入 `main`、CI 通过后运行 `python3 scripts/release.py X.Y.Z`（先加 `--dry-run` 预览）。它只在 HEAD 等于 origin/main 且该提交的 CI 全部通过时打 tag，并从提交信息生成发布说明。
 
