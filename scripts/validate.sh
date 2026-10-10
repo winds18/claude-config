@@ -10,7 +10,7 @@
 # （--snapshot <目录> 只输出该目录的快照，供 test_validate.py 检验快照本身。）
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-all_groups="guard parallel integrate workflow self_update dispatch release server validate install"
+all_groups="guard parallel integrate workflow self_update dispatch release server ui validate install"
 device_groups="guard install"
 usage() { echo "用法: validate.sh [--device | --changed [<base>]]" >&2; exit 2; }
 fail() { echo "  FAIL $*" >&2; exit 1; }
@@ -142,6 +142,7 @@ group workflow "workflow 脚本测试（模拟运行时）" node "$root/scripts/
 group self_update "自我更新端到端测试（bare origin + copy/link 安装）" python3 "$root/scripts/test_self_update.py"
 group dispatch "dispatch 测试" run_dispatch_tests
 group release "发布闸门测试（bare origin + 模拟 gh）" python3 "$root/scripts/test_release.py"
+group ui "界面检查工具测试" python3 "$root/scripts/test_ui_lint.py"
 group server "服务器部署测试（server-setup.sh、install.sh remote；bare origin + 模拟 ssh）" python3 "$root/scripts/test_server_setup.py"
 group validate "静态检查自测（注入坏引用、增量映射、设备模式与无 node）" python3 "$root/scripts/test_validate.py"
 group install "安装往返（复制 / 软链接）" install_roundtrips

@@ -236,7 +236,7 @@ def test_select_groups() -> None:
                   "scripts/test_integrate.py": "integrate", "scripts/test_workflows.mjs": "workflow",
                   "scripts/test_self_update.py": "self_update", "scripts/test_dispatch.py": "dispatch",
                   "scripts/test_validate.py": "validate", "scripts/test_release.py": "release",
-                  "scripts/test_server_setup.py": "server"}
+                  "scripts/test_server_setup.py": "server", "scripts/test_ui_lint.py": "ui"}
     tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True).stdout.split())
     tracked |= {str(p.relative_to(ROOT)) for p in ROOT.rglob("*") if p.is_file() and ".git" not in p.parts
                 and ".claude" not in p.parts and "__pycache__" not in p.parts}
@@ -363,7 +363,7 @@ def test_device_mode(bins: Path) -> None:
     skipped = out.split("已跳过:")[1].splitlines()[0].split() if "已跳过:" in out else []
     check("--device: 结尾标明设备模式与被跳过的组，不声称全部通过",
           "设备模式" in last and "全部校验通过" not in out and "未验证" not in out
-          and set(skipped) == {"parallel", "integrate", "workflow", "self_update", "dispatch", "release", "server", "validate"},
+          and set(skipped) == {"parallel", "integrate", "workflow", "self_update", "dispatch", "release", "server", "ui", "validate"},
           out[-600:])
     for args in (("--device", "--changed"), ("--changed", "--device"), ("--device", "extra"), ("--bogus",),
                  ("--changed", "HEAD", "extra"), ("--snapshot",)):
