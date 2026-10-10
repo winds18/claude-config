@@ -60,12 +60,19 @@ def release_notes(prev: str) -> str:
     return "\n".join(lines).strip() or "（无变更说明）"
 
 
-def checks_for(repo: str, sha: str) -> tuple[str, str]:
-    """(state, message) with state in: success, failed, pending, none, error."""
-    p = run("gh", "api", f"repos/{repo}/commits/{sha}/check-runs")
+def check_runs(repo: str, sha: str, every_attempt: bool = False) -> list[dict] | None:
+    """Check runs of a commit (None when the API call fails). every_attempt includes superseded re-run attempts."""
+    query = "per_page=100" + ("&filter=all" if every_attempt else "")
+    p = run("gh", "api", f"repos/{repo}/commits/{sha}/check-runs?{query}")
     if p.returncode != 0:
-        return "error", f"读取 CI 状态失败：{(p.stdout + p.stderr).strip()[:200]}"
-    runs = json.loads(p.stdout).get("check_runs", [])
+        return None
+    return json.loads(p.stdout).get("check_runs", [])
+
+
+def verdict(runs: list[dict] | None) -> tuple[str, str]:
+    """(state, message) with state in: success, failed, pending, none, error. A completed failure wins over pending."""
+    if runs is None:
+        return "error", "读取 CI 状态失败"
     if not runs:
         return "none", "该提交没有任何 CI 运行记录"
     bad = [f"{r['name']}={r.get('conclusion')}" for r in runs
@@ -81,22 +88,36 @@ def checks_for(repo: str, sha: str) -> tuple[str, str]:
 
 
 def ci_status(sha: str) -> tuple[bool, str]:
-    """CI verdict for `sha`. While a merge commit's own run is still pending (or not yet reported), the verdict of its
-    merged branch head (sha^2) is accepted if the two trees are byte-identical: the same content was already validated
-    on the pull request. A failure reported for the commit itself is never overridden."""
+    """CI verdict for `sha`. While a merge commit's own run is still pending (or not yet reported), the verdict of the
+    merged branch head (sha^2) is accepted only if ALL of these hold, otherwise the release waits:
+      - the two trees are byte-identical, and the branch already contained the main it was merged into
+        (so the pull-request run tested exactly this tree, not a merge with a different base);
+      - no attempt of the merge commit's own checks has ever failed (a re-run does not launder a failure);
+      - every check on the branch head succeeded (no skipped/neutral), covering every check name the merge commit shows."""
     repo = run("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").stdout.strip()
     if not repo:
         return False, "无法确定 GitHub 仓库（gh 未登录或无远端）"
-    state, msg = checks_for(repo, sha)
+    own = check_runs(repo, sha)
+    state, msg = verdict(own)
     if state == "success":
         return True, msg
-    if state in {"pending", "none"}:
-        merged = git("rev-parse", "--verify", "-q", f"{sha}^2")
-        if merged and git("rev-parse", f"{sha}^{{tree}}") == git("rev-parse", f"{merged}^{{tree}}"):
-            state2, msg2 = checks_for(repo, merged)
-            if state2 == "success":
-                return True, f"{msg2}——取自被合并的提交 {merged[:10]}（与本提交文件树完全相同）"
-    return False, msg
+    if state not in {"pending", "none"}:
+        return False, msg
+    merged = git("rev-parse", "--verify", "-q", f"{sha}^2")
+    if not merged or git("rev-parse", f"{sha}^{{tree}}") != git("rev-parse", f"{merged}^{{tree}}"):
+        return False, msg
+    if run("git", "merge-base", "--is-ancestor", f"{sha}^1", merged).returncode != 0:
+        return False, msg + "（分支合并前未包含当时的 main，PR 上验证的不是这棵树）"
+    history = check_runs(repo, sha, every_attempt=True)
+    if verdict(history)[0] in {"failed", "error"}:
+        return False, "该提交的 CI 曾经失败（重跑中也不放行）：" + verdict(history)[1]
+    theirs = check_runs(repo, merged)
+    if verdict(theirs)[0] != "success" or any(r.get("conclusion") != "success" for r in theirs):
+        return False, msg
+    missing = {r["name"] for r in own or []} - {r["name"] for r in theirs}
+    if missing:
+        return False, msg + f"（被合并提交上没有这些检查：{', '.join(sorted(missing))}）"
+    return True, f"CI 通过（{len(theirs)} 项检查）——取自被合并的提交 {merged[:10]}（文件树完全相同，且该分支已包含合并时的 main）"
 
 
 def main() -> int:

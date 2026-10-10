@@ -29,11 +29,22 @@ if a and a[0] == "api":
     per_sha = json.loads(os.environ.get("FAKE_CI_MAP", "{}"))       # {sha: state} overrides for specific commits
     sha = a[1].split("/commits/")[1].split("/")[0] if "/commits/" in a[1] else ""
     state = per_sha.get(sha, state)
+    if "filter=all" in a[1]:                                          # history incl. superseded attempts
+        state = json.loads(os.environ.get("FAKE_CI_HISTORY", "{}")).get(sha, state)
     runs = {"success": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "success"},
                         {"name": "validate (macos)", "status": "completed", "conclusion": "success"}],
             "failure": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "failure"}],
             "pending": [{"name": "validate (ubuntu)", "status": "in_progress", "conclusion": None}],
-            "none": [], "skipped": [{"name": "x", "status": "completed", "conclusion": "skipped"}]}[state]
+            "none": [], "skipped": [{"name": "x", "status": "completed", "conclusion": "skipped"}],
+            "partial": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "failure"},
+                        {"name": "validate (macos)", "status": "in_progress", "conclusion": None}],
+            "with_skipped": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "success"},
+                             {"name": "validate (macos)", "status": "completed", "conclusion": "skipped"}],
+            "pending2": [{"name": "validate (ubuntu)", "status": "in_progress", "conclusion": None},
+                         {"name": "validate (macos)", "status": "queued", "conclusion": None}],
+            "one_only": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "success"}],
+            "rerun_failed": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "failure"},
+                             {"name": "validate (ubuntu)", "status": "in_progress", "conclusion": None}]}[state]
     print(json.dumps({"check_runs": runs})); sys.exit(0)
 if a[:2] == ["release", "create"]:
     sys.exit(0)
@@ -119,9 +130,9 @@ def main() -> int:
         g("merge", "-q", "--no-ff", "-m", "Merge pull request", "feat")
         g("push", "-q")
         merge = g("rev-parse", "HEAD")
-        def rel_map(mapping: dict, *args: str) -> subprocess.CompletedProcess:
+        def rel_map(mapping: dict, *args: str, history: dict | None = None) -> subprocess.CompletedProcess:
             env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_CI": "none",
-                   "FAKE_CI_MAP": json.dumps(mapping), "FAKE_GH_LOG": str(log)}
+                   "FAKE_CI_MAP": json.dumps(mapping), "FAKE_CI_HISTORY": json.dumps(history or {}), "FAKE_GH_LOG": str(log)}
             return subprocess.run([sys.executable, str(TOOL), *args], cwd=repo, capture_output=True, text=True, env=env)
         r = rel_map({merge: "pending", feat: "success"}, "0.2.0", "--dry-run")
         check("合并提交 CI 未完成、被合并提交已通过且文件树相同 → 放行", r.returncode == 0 and "文件树完全相同" in r.stdout, r.stdout + r.stderr)
@@ -129,6 +140,34 @@ def main() -> int:
         check("被合并提交 CI 失败 → 仍阻塞", r.returncode == 2, r.stderr)
         r = rel_map({merge: "failure", feat: "success"}, "0.2.0", "--dry-run")
         check("合并提交自身 CI 失败 → 不采用被合并提交的结果", r.returncode == 2 and "CI 未通过" in r.stderr, r.stderr)
+        # --- security review regressions ---
+        r = rel_map({merge: "none", feat: "success"}, "0.2.0", "--dry-run")
+        check("合并提交尚无 CI 记录、分支已通过 → 放行", r.returncode == 0, r.stdout + r.stderr)
+        for st in ("pending", "none", "with_skipped"):
+            r = rel_map({merge: "pending", feat: st}, "0.2.0", "--dry-run")
+            check(f"被合并提交为 {st} → 阻塞（必须全部 success）", r.returncode == 2, r.stdout + r.stderr)
+        r = rel_map({merge: "partial", feat: "success"}, "0.2.0", "--dry-run")
+        check("合并提交部分失败部分进行中 → 判为失败，不回退", r.returncode == 2 and "CI 未通过" in r.stderr, r.stderr)
+        r = rel_map({merge: "pending", feat: "success"}, "0.2.0", "--dry-run", history={merge: "rerun_failed"})
+        check("合并提交曾失败、重跑中 → 不放行（重跑不能洗掉失败）", r.returncode == 2 and "曾经失败" in r.stderr, r.stderr)
+        r = rel_map({merge: "pending2", feat: "one_only"}, "0.2.0", "--dry-run")
+        check("被合并提交缺少合并提交上的某项检查 → 阻塞", r.returncode == 2 and "没有这些检查" in r.stderr, r.stderr)
+
+        # the reviewer's scenario: main got commit X, X was reverted, and a branch cut BEFORE X is merged without
+        # being updated. tree(merge) == tree(branch), yet the PR run tested (branch + X) - a tree that is not released.
+        g("switch", "-q", "-c", "old-branch")                     # cut before X
+        (repo / "old.txt").write_text("o\n"); g("add", "-A"); g("commit", "-qm", "feat: old branch")
+        old = g("rev-parse", "HEAD")
+        g("switch", "-q", "main")
+        (repo / "x.txt").write_text("x\n"); g("add", "-A"); g("commit", "-qm", "feat: X")
+        g("revert", "--no-edit", "HEAD")
+        g("merge", "-q", "--no-ff", "-m", "Merge old-branch", "old-branch")
+        g("push", "-q")
+        m_old = g("rev-parse", "HEAD")
+        check("夹具：合并提交与旧分支的文件树相同", g("rev-parse", "HEAD^{tree}") == g("rev-parse", "old-branch^{tree}"))
+        r = rel_map({m_old: "pending", old: "success"}, "0.2.0", "--dry-run")
+        check("分支未包含合并时的 main（PR 验证的是另一棵树）→ 不放行", r.returncode == 2 and "未包含当时的 main" in r.stderr, r.stdout + r.stderr)
+
         # a merge that changed content (main had moved on): trees differ, so the branch verdict must not be reused
         g("switch", "-q", "-c", "feat2", "HEAD~1")
         (repo / "other.txt").write_text("another branch\n")      # a different file, so the merge is clean but changes the tree
