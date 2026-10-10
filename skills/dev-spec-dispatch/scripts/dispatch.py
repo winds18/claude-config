@@ -328,6 +328,9 @@ def cmd_prepare(a) -> int:
         if name in DEFAULT_BRANCHES and not a.allow_default_branch:
             return fail(f"当前在默认分支 {name}：先建任务分支（git switch -c <task>）再提交检查点，"
                         "确需在默认分支提交时加 --allow-default-branch")
+        if not explicit_identity():
+            return fail("未显式设置 git 身份（user.name / user.email）：不提交检查点，否则提交会带上自动生成的 用户名@主机名。"
+                        "先 git config user.name / user.email")
         saved_index = out("write-tree")              # restore the user's staging if anything below fails
         restore = lambda: git("read-tree", saved_index) if saved_index else git("reset", "-q")
         add = git("add", "-A", "--", ":/", WT_EXCLUDE)  # never stage linked worktrees as gitlinks
@@ -446,28 +449,45 @@ def review_args(range_: str) -> dict:
     }
 
 
-def listening_ports() -> list[int]:
-    """TCP ports already in use: `ss` on Linux, `lsof` on macOS. Empty when neither tool is available."""
-    found: set[int] = set()
-    if shutil.which("ss"):
-        for line in subprocess.run(["ss", "-ltnH"], capture_output=True, text=True, errors="replace").stdout.splitlines():
-            cols = line.split()
-            if len(cols) >= 4 and cols[3].rsplit(":", 1)[-1].isdigit():
-                found.add(int(cols[3].rsplit(":", 1)[-1]))
-    elif shutil.which("lsof"):
-        # process names in lsof output are not guaranteed to be UTF-8
-        text = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True, errors="replace").stdout
-        found = {int(m) for m in re.findall(r":(\d+) \(LISTEN\)", text)}
-    return sorted(found)
+def explicit_identity() -> bool:
+    """Same rule as integrate.py preflight: an identity the user provided, not git's synthesised user@hostname."""
+    return all(git("-c", "user.useConfigOnly=true", "var", v).returncode == 0
+               for v in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"))
+
+
+def listening_ports() -> tuple[list[int], str]:
+    """(ports, source). Tries ss (Linux), netstat (macOS/BSD: lists every user's sockets without root), then lsof
+    (current user only without root). A tool that is missing or fails falls through; source is "" when none worked."""
+    def run_tool(cmd: list[str]) -> str | None:
+        if not shutil.which(cmd[0]):
+            return None
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")   # process names may not be UTF-8
+        return p.stdout if p.returncode == 0 else None
+
+    text = run_tool(["ss", "-ltnH"])
+    if text is not None:
+        cols = (line.split() for line in text.splitlines())
+        return sorted({int(c[3].rsplit(":", 1)[-1]) for c in cols if len(c) >= 4 and c[3].rsplit(":", 1)[-1].isdigit()}), "ss"
+    text = run_tool(["netstat", "-an", "-p", "tcp"])
+    if text is not None:
+        found = set()
+        for line in text.splitlines():
+            c = line.split()
+            if len(c) >= 6 and c[-1] == "LISTEN" and c[3].rsplit(".", 1)[-1].isdigit():
+                found.add(int(c[3].rsplit(".", 1)[-1]))
+        return sorted(found), "netstat"
+    text = run_tool(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"])
+    if text is not None:
+        return sorted({int(m) for m in re.findall(r":(\d+) \(LISTEN\)", text)}), "lsof（仅当前用户的进程）"
+    return [], ""
 
 
 def environment() -> dict:
     """Facts that decide how work can be delivered and isolated on this machine (local or an SSH host)."""
     have = lambda tool: shutil.which(tool) is not None
-    # explicit config only: git can synthesise user@hostname, which works but leaks the machine name into history
-    ident = bool(out("config", "user.name")) and bool(out("config", "user.email"))
+    ident = explicit_identity()
     gh_ok = have("gh") and subprocess.run(["gh", "auth", "status"], capture_output=True, text=True).returncode == 0
-    ports = listening_ports()
+    ports, port_source = listening_ports()
     in_repo = git("rev-parse", "--is-inside-work-tree").returncode == 0
     remote = out("remote", "get-url", "origin") if in_repo else ""
     notes = []
@@ -477,11 +497,13 @@ def environment() -> dict:
         notes.append("gh 不可用或未登录：本机不能开 PR / 读 CI / 发布；在这里止于提交与推送，PR 与发布由有 gh 的会话完成")
     if not have("node"):
         notes.append("没有 node：依赖 node 的检查在本机不会运行")
-    if ports:
-        notes.append(f"已有 {len(ports)} 个端口在监听：给各包分配端口时避开它们")
+    if not port_source:
+        notes.append("无法列出监听端口（ss / netstat / lsof 都不可用或失败）：分配端口前自行确认")
+    elif ports:
+        notes.append(f"已有 {len(ports)} 个端口在监听（来源 {port_source}）：给各包分配端口时避开它们")
     return {"git_identity": ident, "gh": gh_ok, "node": have("node"), "docker": have("docker"),
             "ssh_session": bool(os.environ.get("SSH_CONNECTION")), "in_repo": in_repo, "origin": remote,
-            "listening_ports": ports, "notes": notes}
+            "listening_ports": ports, "port_source": port_source, "notes": notes}
 
 
 def cmd_env(a) -> int:

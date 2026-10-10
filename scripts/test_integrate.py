@@ -120,10 +120,17 @@ def main() -> int:
         name_cfg, mail_cfg = g("config", "user.name"), g("config", "user.email")
         g("config", "--unset", "user.name"); g("config", "--unset", "user.email")
         noid = {**os.environ, "HOME": str(cfg), "GIT_CONFIG_NOSYSTEM": "1"}
-        noid.pop("GIT_CONFIG_GLOBAL", None)
+        for k in ("GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                  "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            noid.pop(k, None)
         pr = subprocess.run([sys.executable, str(TOOL), "preflight", "--base", g("rev-parse", "HEAD"), "--json"],
                             cwd=repo, capture_output=True, text=True, env=noid)
         check("preflight: 未显式设置 git 身份时阻塞", pr.returncode == 2 and "git 身份" in pr.stdout, pr.stdout[-300:])
+        envid = {**noid, "GIT_AUTHOR_NAME": "ci", "GIT_AUTHOR_EMAIL": "ci@example.com",
+                 "GIT_COMMITTER_NAME": "ci", "GIT_COMMITTER_EMAIL": "ci@example.com"}
+        pr = subprocess.run([sys.executable, str(TOOL), "preflight", "--base", g("rev-parse", "HEAD"), "--json"],
+                            cwd=repo, capture_output=True, text=True, env=envid)
+        check("preflight: 仅由环境变量提供的身份不被误拦", "git 身份" not in pr.stdout, pr.stdout[-300:])
         g("config", "user.name", name_cfg); g("config", "user.email", mail_cfg)
 
         wa = worktree("api", ["src/api/**"], {"src/api/x.py": "api = 1\n"})

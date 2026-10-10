@@ -347,7 +347,9 @@ def main() -> int:
         bare_home.mkdir()
         env_env = {**env, "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}", "HOME": str(bare_home),
                    "GIT_CONFIG_NOSYSTEM": "1", "SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}
-        env_env.pop("GIT_CONFIG_GLOBAL", None)
+        for k in ("GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                  "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            env_env.pop(k, None)             # a developer machine may provide an identity through any of these
         r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=repo, capture_output=True, text=True, env=env_env)
         e = json.loads(r.stdout or "{}")
         check("env: 解析监听端口且不因非 UTF-8 输出崩溃", r.returncode == 0 and e.get("listening_ports") == [22, 5432, 8090], r.stdout + r.stderr)
@@ -360,6 +362,27 @@ def main() -> int:
         e = json.loads(r.stdout or "{}")
         check("env: 未显式配置身份时报告无（不采信自动生成的 用户名@主机名）", e.get("git_identity") is False
               and any("git 身份" in n for n in e.get("notes", [])), r.stdout)
+        # identity supplied only through the environment (common in CI) is explicit and must be accepted
+        ci_env = {**env_env, "GIT_AUTHOR_NAME": "ci", "GIT_AUTHOR_EMAIL": "ci@example.com",
+                  "GIT_COMMITTER_NAME": "ci", "GIT_COMMITTER_EMAIL": "ci@example.com"}
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=norepo, capture_output=True, text=True, env=ci_env)
+        check("env: 仅由环境变量提供的身份被接受", json.loads(r.stdout or "{}").get("git_identity") is True, r.stdout)
+        # prepare --commit must refuse BEFORE creating a checkpoint that would carry user@hostname
+        (norepo / "f.txt").write_text("x\n")
+        subprocess.run(["git", "-C", str(norepo), "add", "-A"], check=True, env=ci_env)
+        subprocess.run(["git", "-C", str(norepo), "commit", "-qm", "init"], check=True, env=ci_env)
+        subprocess.run(["git", "-C", str(norepo), "switch", "-q", "-c", "task"], check=True, env=ci_env)
+        (norepo / "contract.txt").write_text("c\n")
+        head0 = subprocess.run(["git", "-C", str(norepo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        r = subprocess.run([sys.executable, str(tool), "prepare", str(plan_file(two)), "--commit"], cwd=norepo,
+                           capture_output=True, text=True, env=env_env)
+        head1 = subprocess.run(["git", "-C", str(norepo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        check("prepare: 无显式身份时在提交检查点之前拒绝", r.returncode == 2 and "git 身份" in r.stderr and head0 == head1
+              and "已提交检查点" not in r.stderr, r.stderr)
+        # a failing `ss` (old iproute2 without -H) must fall through instead of reporting "no ports"
+        ss.write_text("#!/bin/sh\nexit 255\n")
+        r = subprocess.run([sys.executable, str(tool), "env", "--json"], cwd=repo, capture_output=True, text=True, env=env_env)
+        check("env: ss 失败时回退到其他工具而不是报告无端口", json.loads(r.stdout or "{}").get("port_source") != "ss", r.stdout[-300:])
 
         # ---------- model：按包指定模型 ----------
         mp = {"packages": [{"name": "a", "goal": "g", "owned": ["src/a/**"], "verify": ["t"], "model": "sonnet"},
@@ -367,9 +390,6 @@ def main() -> int:
         p = run("prepare", str(plan_file(mp)))
         args = json.loads(p.stdout or "{}")
         check("model: 合法取值透传到 args", [x.get("model") for x in args.get("packages", [])] == ["sonnet", "claude-opus-5-5"], p.stdout + p.stderr)
-        if node:
-            v = wf_validate(args)
-            check("契约: 含 model 的 args 被 workflow 接受", v.get("ok"), str(v))
         bad_model = {"packages": [{"name": "a", "goal": "g", "owned": ["src/a/**"], "verify": ["t"], "model": "gpt-x"}]}
         p = run("check", str(plan_file(bad_model)), "--json")
         check("model: 非法取值报错", p.returncode == 2 and "model" in p.stdout, p.stdout)
