@@ -20,11 +20,13 @@ skills/                     按需加载的流程（细节只维护在这里）
     scripts/integrate.py    确定性集成：preflight / status / plan / apply / cleanup
   dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → workflow 参数；复核规模计算
     scripts/dispatch.py     check / prepare / review-args
+  ui-quality/               界面与交互质量：改 UI 文件时自动启用；状态表、视觉与交互底线、"生成味"清单、渲染验证
+    scripts/ui_lint.py      可客观检出的界面问题（无标签输入、焦点样式被去掉、颜色/字号/圆角未收敛……）
   project-bootstrap/        /project-bootstrap：项目 CLAUDE.md、settings、worktree 准备（含模板）
 workflows/                  dynamic workflow，安装为 /命令
   dev-spec-implement.js     每包：对抗用例设计 → worktree implementer（先写测试）→ 包级复核
   dev-spec-review.js        多视角并行发现 → 去重 → 逐条对抗验证
-agents/                     子代理：implementer、case-designer、reviewer、security-reviewer、test-triager
+agents/                     子代理：implementer、case-designer、reviewer、ui-reviewer、security-reviewer、test-triager
 hooks/
   policy-guard.py           PreToolUse：高危删除、危险 git、绕过权限、密钥提交、worktree 派发检查
   dev_spec_update.py        SessionStart（异步）：校验后静默自我更新
@@ -148,6 +150,16 @@ bash install.sh remote user@host
 5. 有可验证终态的长任务，可用 `/goal <验收条件>` 让独立评估器判定完成；各自要长时间推进的大块工作用桌面端并行会话（各自 worktree 与 PR）。
 
 Workflow 工具不可用时（桌面端会话目前常见），按 `parallel-dev` 的手动三阶段进行，效果等价。代理团队只在终端 CLI 可用，本规范不依赖它。
+
+## 界面质量
+
+改动界面文件时 `ui-quality` 技能自动启用：先定产品类型并列出界面状态（加载、空、出错、超长……），按视觉与交互底线实现，交付前做真实渲染验证并由 `ui-reviewer` 以设计师和新用户的眼光看一遍。可客观检出的问题用脚本查：
+
+```bash
+python3 skills/ui-quality/scripts/ui_lint.py --changed
+```
+
+它不判断审美，只报能确定的事：没有标签的输入框、被去掉的焦点样式、绑在 `div` 上的点击、缺 alt 的图片，以及"值没有取自同一套系统"的迹象（颜色、字号、圆角种类过多，渐变、悬停放大、全大写小标签泛滥）。视觉方向的取舍建议另装官方 `frontend-design` 插件。
 
 ## 守卫行为
 
