@@ -580,9 +580,12 @@ def cmd_prompts(a) -> int:
         docs[p["name"]] = "\n\n".join(doc) + "\n"
     if a.out_dir:
         d = Path(a.out_dir)
+        files = {name: re.sub(r"[^\w.-]+", "_", name) + ".prompts.md" for name in docs}
+        if len(set(files.values())) != len(files):
+            return fail("包名转成文件名后重复，改用 --package 逐个输出：" + ", ".join(sorted(files)))
         d.mkdir(parents=True, exist_ok=True)
         for name, text in docs.items():
-            target = d / (re.sub(r"[^\w.-]+", "_", name) + ".prompts.md")
+            target = d / files[name]
             target.write_text(text, encoding="utf-8")
             print(target)
     else:

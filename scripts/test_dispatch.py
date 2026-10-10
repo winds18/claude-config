@@ -428,6 +428,12 @@ def main() -> int:
         out_dir = Path(tmp) / "prompts-out"
         p = run("prompts", str(args_file), "--out-dir", str(out_dir))
         check("prompts: --out-dir 每包一个文件", p.returncode == 0 and sorted(x.name for x in out_dir.iterdir()) == ["api.prompts.md", "fmt.prompts.md"], p.stdout + p.stderr)
+        clash = dict(json.loads(args_file.read_text()))
+        clash["packages"] = [dict(clash["packages"][0], name="a b"), dict(clash["packages"][1], name="a_b")]
+        clash_file = Path(tmp) / "clash-args.json"
+        clash_file.write_text(json.dumps(clash, ensure_ascii=False))
+        p = run("prompts", str(clash_file), "--out-dir", str(Path(tmp) / "clash-out"))
+        check("prompts: 文件名冲突时拒绝而不是互相覆盖", p.returncode == 2 and not (Path(tmp) / "clash-out").exists(), p.stdout + p.stderr)
         p = run("prompts", str(plan_file(pp, "raw-plan.json")))
         check("prompts: 拒绝没有 base 的原始计划", p.returncode == 2 and "base" in p.stderr, p.stdout + p.stderr)
         off = dict(json.loads(args_file.read_text()), case_design=False)
