@@ -79,4 +79,5 @@
 | 桌面端优先（多会话替代代理团队、预览验证、CI 状态栏） | 官方文档：桌面端不支持代理团队；SSH 会话读取远程主机的 `~/.claude`。实测：Workflow 工具在桌面会话不可用，手动三阶段为实际路径 |
 | Debian 服务器支持（`server-setup.sh`、`install.sh remote`、`--device` 校验、Debian CI） | 用户的远程环境是 Debian 服务器：通常只有 git 与 python3，没有 node；设备端更新不应依赖开发工具链 |
 | `dispatch.py env`、preflight 的显式 git 身份检查、按包 `model` | 真机部署到 Debian 服务器后发现规范默认了开发机条件（见 incidents 2026-10-10）；implementer 单包消耗约 25 万 token，机械性的包应可指定更便宜的模型 |
+| 发布闸门认可"文件树相同"的 PR CI 结果 | 每次合入后都要再等一轮内容完全相同的 CI 才能发布，多次打断自主推进；树相同即内容相同，等价且不降低闸门强度（自身失败不被覆盖、树不同不放行，均有测试） |
 
