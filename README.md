@@ -16,7 +16,7 @@ global/
     04-git-delivery.md      Git、PR 入口、完成条件、交付说明格式
 skills/                     按需加载的流程（细节只维护在这里）
   dev-workflow/             L 档五阶段、质量表、测试矩阵、复核、PR 与 CI
-  parallel-dev/             派发前检查、工作包、workflow 派发、集成与冲突、接管、代理团队、跨仓
+  parallel-dev/             派发前检查、工作包、三阶段派发、集成与冲突、接管、桌面端多会话、跨仓
     scripts/integrate.py    确定性集成：preflight / status / plan / apply / cleanup
   dev-spec-dispatch/        /dev-spec-dispatch：计划表校验 → 检查点 → preflight → workflow 参数；复核规模计算
     scripts/dispatch.py     check / prepare / review-args
@@ -123,9 +123,9 @@ bash install.sh uninstall --apply
 | 交付 | 完成条件 + 交付说明；PR/CI 见 `dev-workflow` §7 |
 
 4. 会话被压缩或恢复后，先 `integrate.py status` 从 git 恢复并行状态。
-5. 有可验证终态的长任务，可用 `/goal <验收条件>` 让独立评估器判定完成；多视角评审或竞争性假设排障可启用代理团队（实验特性）。
+5. 有可验证终态的长任务，可用 `/goal <验收条件>` 让独立评估器判定完成；各自要长时间推进的大块工作用桌面端并行会话（各自 worktree 与 PR）。
 
-dynamic workflow 需在 `/config` 中开启（部分计划默认关闭）；不可用时规范自动回退为手动派发子代理。
+Workflow 工具不可用时（桌面端会话目前常见），按 `parallel-dev` 的手动三阶段进行，效果等价。代理团队只在终端 CLI 可用，本规范不依赖它。
 
 ## 守卫行为
 

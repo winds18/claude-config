@@ -25,7 +25,7 @@
 | 主任务走关键路径、有收益才委派 | `03-parallel` | Agent 工具、后台运行、完成通知 |
 | 单一写入负责人、改派先确认停止 | `03-parallel` 硬规则、`parallel-dev` §5 | `isolation: worktree`、TaskStop |
 | 工作包六要素 | `parallel-dev/references/work-package.md` | 子代理不继承历史，模板强制自包含 |
-| 多端按职责组织、联合验收 | `parallel-dev` §6–7 | 代理团队、共享任务列表、SendMessage |
+| 多端按职责组织、联合验收 | `parallel-dev` §6–7 | 桌面端多会话、跨会话消息 |
 | 跨仓逐仓核对规则与版本 | `parallel-dev` §7 | `--add-dir`、多会话 |
 | 临时文件隔离与清理 | `02-engineering` | 会话 scratchpad |
 | 提交/推送/发布分别授权 | `04-git-delivery` | 权限模式 |
@@ -38,7 +38,6 @@
 - **worktree 基线陷阱**：子代理 worktree 默认从远端默认分支创建，看不到本地检查点。安装器在用户设置写入 `worktree.baseRef: "head"`（项目可覆盖），派发前提交契约检查点并用 `integrate.py preflight` 确认；`.worktreeinclude` 带入 gitignored 环境文件。
 - **集成协议**：worktree 子代理在自己分支提交并回报 SHA，主会话检查越界 diff 后按依赖顺序合入，再在集成状态上验证。
 - **只读角色的硬约束**：复核类子代理用 `tools` + `disallowedTools` 保证不能写文件，而不是只靠指令。
-- **代理团队质量门**：`TaskCompleted` hook 以 exit 2 拒绝未通过验收的任务完成。
 - **并行硬规则由 hook 强制**：派发 worktree 子代理前检查未提交改动与 baseRef；`implementer` 的 frontmatter hooks 强制归属声明、拦截越界编辑，并在结束时按分支创建点（reflog）核对提交与改动范围——后者也能发现经 Bash 写入的越界文件。
 - **实测得出的约束**（2026-10-08 端到端验证）：Claude 的 worktree 隔离会拒绝子代理含 `$(...)` 的命令和指向 `.git/worktrees/` 的路径，因此归属声明改为"Write 一个约定文件 → hook 进程截获并存入私有 git 目录"；子代理定义在会话启动时缓存，修改 frontmatter hooks 后需新会话生效；以声明的基线做 diff 会把父分支后续提交误判为越界，故以分支创建点为准。
 - **`ask` 决策**：Claude 的 PreToolUse 支持 `ask`，危险但可能合理的 git 操作交由用户确认，而不是一律拒绝。
@@ -77,4 +76,6 @@
 | 发布闸门（CI + stable 通道 + `release.py`） | 自评：自动更新曾直接跟随 `main`，任何合入都会立即到达所有设备，且无 CI、无版本、无保护。改为只有 CI 通过并打了 tag 的版本才分发；tag 不可移动；发布说明由提交生成，不新增手写文档 |
 | 文档与版本随阶段递进（`04-git-delivery`） | 用户要求：严谨但不过度文档化，原型期不铺文档 |
 | Actions 锁定 SHA + Dependabot；`rollback`/`resume` | 自评：本仓库代码会分发到设备，依赖来源须锁死；坏版本发布后需要能把单台设备退回。回滚靠两道彼此独立的保护（关闭自动更新的旧版本也认识的开关 + 更新器跳过 detached），兼容回滚到不认识新选项的旧版本 |
+| 桌面端优先（多会话替代代理团队、预览验证、CI 状态栏） | 官方文档：桌面端不支持代理团队；SSH 会话读取远程主机的 `~/.claude`。实测：Workflow 工具在桌面会话不可用，手动三阶段为实际路径 |
+| Debian 服务器支持（`server-setup.sh`、`install.sh remote`、`--device` 校验、Debian CI） | 用户的远程环境是 Debian 服务器：通常只有 git 与 python3，没有 node；设备端更新不应依赖开发工具链 |
 

@@ -18,7 +18,8 @@ disable-model-invocation: true
 4. **`.claude/settings.json`**：参照 [templates/project-settings.json](templates/project-settings.json)：
    - 必须：`"worktree": {"baseRef": "head"}`，保证 worktree 子代理能看到本地检查点提交；
    - 权限：把已验证的测试/构建/lint 命令加入 `permissions.allow`，减少并行时的审批打断；
-   - 可选：格式化/lint 的 PostToolUse hook，代理团队的 TaskCompleted 验收 hook（只在用户需要时启用）。
+   - 可选：格式化/lint 的 PostToolUse hook（只在用户需要时启用）。
+   - 可预览的 Web 项目：生成 `.claude/launch.json`（启动命令与端口），供桌面端预览与自动验证使用。
 5. **`.worktreeinclude`**：列出 worktree 需要的 gitignored 文件（如 `.env.local`）。不要列入真实生产密钥。
 6. **`.gitignore`**：加入 `.claude/worktrees/`、`.claude/settings.local.json`、`CLAUDE.local.md`、`.tmp/`（按需）。
 7. **CI（项目没有时）**：参照 [templates/ci-github.yml](templates/ci-github.yml) 生成最小 CI，只放步骤 2 中验证通过的命令；会话内验证通过不代表合入时仍通过。已有 CI 时只核对其命令与 CLAUDE.md 一致。
