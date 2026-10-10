@@ -19,12 +19,13 @@ jobs:
     timeout-minutes: 20
     env:
       DEV_SPEC_REQUIRE_NODE: "1"      # node is installed below: a missing node must fail here, not skip
+      DEV_SPEC_NESTED_FULL: ${{ matrix.nested_full }}   # "1" on one job: also re-run the full suite with node hidden
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, python: "3.9" }    # declared minimum
-          - { os: ubuntu-latest, python: "3.13" }
+          - { os: ubuntu-latest, python: "3.13", nested_full: "1" }
           - { os: macos-latest, python: "3.13" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

@@ -18,6 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 results: list[tuple[str, bool, str]] = []
+skipped: list[str] = []             # opt-in cases that did not run; printed in the summary, never silent
 IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".tmp", "node_modules", "worktrees")
 
 
@@ -369,10 +370,18 @@ def test_without_node(bins: Path) -> None:
           and "通过" not in (r.stdout.strip().splitlines() or [""])[-1], f"rc={r.returncode} {r.stdout[-300:]} {r.stderr}")
     r = run_sh("--changed", "no-such-ref", path=str(bins), DEV_SPEC_REQUIRE_NODE="1")
     check("无 node + REQUIRE_NODE=1：--changed 选中依赖 node 的组时同样失败", r.returncode != 0 and "node" in r.stderr, r.stderr)
+    r = subprocess.run(dispatch, env=env, capture_output=True, text=True, errors="replace")
+    check("无 node：dispatch 测试通过且契约段的跳过可见", r.returncode == 0
+          and re.search(r"^\s*SKIP .*契约.*node", r.stdout, re.M) is not None and "未验证" in r.stdout.splitlines()[-1],
+          r.stdout[-400:])
     if os.environ.get("DEV_SPEC_VALIDATE_NESTED") or not shutil.which("node"):
         # either we are inside that full run already, or this run itself has no node (Debian CI, a server):
         # the enclosing run is the no-node full validation, and its own summary is what gets checked or read
         print("  （本次运行本身没有 node 或已在嵌套中：无 node 的全量校验即外层这一次，不再递归）")
+        return
+    if os.environ.get("DEV_SPEC_NESTED_FULL") != "1":
+        # it re-runs the whole suite (about two extra minutes); one CI job sets the variable
+        skipped.append("无 node 的嵌套全量校验（设 DEV_SPEC_NESTED_FULL=1 运行；CI 的 ubuntu py3.13 任务会跑）")
         return
     r = run_sh(path=str(bins), timeout=1500, DEV_SPEC_VALIDATE_NESTED="1")
     out = r.stdout
@@ -403,7 +412,9 @@ def main() -> int:
     failed = [r for r in results if not r[1]]
     for name, ok, detail in failed:
         print(f"FAIL {name}: {detail}")
-    print(f"validate: {len(results) - len(failed)}/{len(results)} passed")
+    for note in skipped:
+        print(f"  SKIP {note}")
+    print(f"validate: {len(results) - len(failed)}/{len(results)} passed" + (f"，{len(skipped)} 项未运行" if skipped else ""))
     return 1 if failed else 0
 
 
