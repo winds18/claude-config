@@ -26,6 +26,9 @@ if a[:2] == ["repo", "view"]:
     print("owner/repo"); sys.exit(0)
 if a and a[0] == "api":
     state = os.environ.get("FAKE_CI", "success")
+    per_sha = json.loads(os.environ.get("FAKE_CI_MAP", "{}"))       # {sha: state} overrides for specific commits
+    sha = a[1].split("/commits/")[1].split("/")[0] if "/commits/" in a[1] else ""
+    state = per_sha.get(sha, state)
     runs = {"success": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "success"},
                         {"name": "validate (macos)", "status": "completed", "conclusion": "success"}],
             "failure": [{"name": "validate (ubuntu)", "status": "completed", "conclusion": "failure"}],
@@ -107,6 +110,36 @@ def main() -> int:
         check("版本必须大于上一个发布", r.returncode == 2 and "大于" in r.stderr, r.stderr)
         r = rel("0.2.0", "--dry-run")
         check("发布说明只含上个 tag 之后的提交", "更快" in r.stdout and "初始功能" not in r.stdout, r.stdout)
+
+        # merge commit whose own CI is still running: accept the verdict of the merged head when the trees are identical
+        g("switch", "-q", "-c", "feat")
+        commit("feat: 分支功能")
+        feat = g("rev-parse", "HEAD")
+        g("switch", "-q", "main")
+        g("merge", "-q", "--no-ff", "-m", "Merge pull request", "feat")
+        g("push", "-q")
+        merge = g("rev-parse", "HEAD")
+        def rel_map(mapping: dict, *args: str) -> subprocess.CompletedProcess:
+            env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "FAKE_CI": "none",
+                   "FAKE_CI_MAP": json.dumps(mapping), "FAKE_GH_LOG": str(log)}
+            return subprocess.run([sys.executable, str(TOOL), *args], cwd=repo, capture_output=True, text=True, env=env)
+        r = rel_map({merge: "pending", feat: "success"}, "0.2.0", "--dry-run")
+        check("合并提交 CI 未完成、被合并提交已通过且文件树相同 → 放行", r.returncode == 0 and "文件树完全相同" in r.stdout, r.stdout + r.stderr)
+        r = rel_map({merge: "pending", feat: "failure"}, "0.2.0", "--dry-run")
+        check("被合并提交 CI 失败 → 仍阻塞", r.returncode == 2, r.stderr)
+        r = rel_map({merge: "failure", feat: "success"}, "0.2.0", "--dry-run")
+        check("合并提交自身 CI 失败 → 不采用被合并提交的结果", r.returncode == 2 and "CI 未通过" in r.stderr, r.stderr)
+        # a merge that changed content (main had moved on): trees differ, so the branch verdict must not be reused
+        g("switch", "-q", "-c", "feat2", "HEAD~1")
+        (repo / "other.txt").write_text("another branch\n")      # a different file, so the merge is clean but changes the tree
+        g("add", "-A"); g("commit", "-qm", "feat: 另一个分支")
+        feat2 = g("rev-parse", "HEAD")
+        g("switch", "-q", "main")
+        g("merge", "-q", "--no-ff", "-m", "Merge 2", "feat2")
+        g("push", "-q")
+        merge2 = g("rev-parse", "HEAD")
+        r = rel_map({merge2: "pending", feat2: "success"}, "0.2.0", "--dry-run")
+        check("文件树不同（主干已前进）→ 不放行", r.returncode == 2 and "尚未完成" in r.stderr, r.stdout + r.stderr)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

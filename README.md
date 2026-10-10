@@ -179,7 +179,7 @@ bash scripts/validate.sh
 
 迭代时用 `bash scripts/validate.sh --changed` 只跑受改动影响的测试组；提交前跑全量。没有 node 的机器上，依赖 node 的两段会跳过并在结尾标为未验证（CI 中强制要求）。
 
-发布：改动经 PR 合入 `main`、CI 通过后运行 `python3 scripts/release.py X.Y.Z`（先加 `--dry-run` 预览）。它只在 HEAD 等于 origin/main 且该提交的 CI 全部通过时打 tag，并从提交信息生成发布说明。
+发布：改动经 PR 合入 `main`、CI 通过后运行 `python3 scripts/release.py X.Y.Z`（先加 `--dry-run` 预览）。它只在 HEAD 等于 origin/main 且该提交的 CI 全部通过时打 tag，并从提交信息生成发布说明。合并提交自己的 CI 还没跑完时，如果它与被合并分支的头提交文件树完全相同，则采用后者已通过的结果（同样的内容已在 PR 上验证过）；合并提交自身的失败不会被覆盖。
 
 校验包括：子代理/技能 frontmatter（严格 YAML）、常驻规则行数预算、Markdown 相对链接、JSON/Python 语法、仓库内无疑似密钥；交叉引用（文档里的 integrate/install 子命令与参数、workflow 与技能名、§ 章节、子代理类型、workflow 参数字段、README 目录树都必须真实存在）；派发脚本测试；守卫行为测试；在真实 git worktree 上测试并行守卫与 `integrate.py`；用模拟运行时测试两个 workflow（含"运行时只传上一阶段结果"的严格变体）；用 bare origin + 源仓库 + 复制/软链接两种安装端到端测试自我更新（节流、持锁、校验失败拒绝、脏仓库与未推送跳过、安装失败回退、签名要求、关闭后保持）；在临时目录分别用复制与软链接模式完成安装往返（不触碰真实 `~/.claude`）。
 

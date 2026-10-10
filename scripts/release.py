@@ -60,25 +60,43 @@ def release_notes(prev: str) -> str:
     return "\n".join(lines).strip() or "（无变更说明）"
 
 
+def checks_for(repo: str, sha: str) -> tuple[str, str]:
+    """(state, message) with state in: success, failed, pending, none, error."""
+    p = run("gh", "api", f"repos/{repo}/commits/{sha}/check-runs")
+    if p.returncode != 0:
+        return "error", f"读取 CI 状态失败：{(p.stdout + p.stderr).strip()[:200]}"
+    runs = json.loads(p.stdout).get("check_runs", [])
+    if not runs:
+        return "none", "该提交没有任何 CI 运行记录"
+    bad = [f"{r['name']}={r.get('conclusion')}" for r in runs
+           if r.get("status") == "completed" and r.get("conclusion") not in OK_CONCLUSIONS]
+    if bad:
+        return "failed", f"CI 未通过：{', '.join(bad)}"
+    pending = [r["name"] for r in runs if r.get("status") != "completed"]
+    if pending:
+        return "pending", f"CI 尚未完成：{', '.join(pending)}"
+    if not any(r.get("conclusion") == "success" for r in runs):
+        return "failed", "CI 没有成功的检查"
+    return "success", f"CI 通过（{len(runs)} 项检查）"
+
+
 def ci_status(sha: str) -> tuple[bool, str]:
+    """CI verdict for `sha`. While a merge commit's own run is still pending (or not yet reported), the verdict of its
+    merged branch head (sha^2) is accepted if the two trees are byte-identical: the same content was already validated
+    on the pull request. A failure reported for the commit itself is never overridden."""
     repo = run("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").stdout.strip()
     if not repo:
         return False, "无法确定 GitHub 仓库（gh 未登录或无远端）"
-    p = run("gh", "api", f"repos/{repo}/commits/{sha}/check-runs")
-    if p.returncode != 0:
-        return False, f"读取 CI 状态失败：{(p.stdout + p.stderr).strip()[:200]}"
-    runs = json.loads(p.stdout).get("check_runs", [])
-    if not runs:
-        return False, "该提交没有任何 CI 运行记录"
-    pending = [r["name"] for r in runs if r.get("status") != "completed"]
-    if pending:
-        return False, f"CI 尚未完成：{', '.join(pending)}"
-    bad = [f"{r['name']}={r.get('conclusion')}" for r in runs if r.get("conclusion") not in OK_CONCLUSIONS]
-    if bad:
-        return False, f"CI 未通过：{', '.join(bad)}"
-    if not any(r.get("conclusion") == "success" for r in runs):
-        return False, "CI 没有成功的检查"
-    return True, f"CI 通过（{len(runs)} 项检查）"
+    state, msg = checks_for(repo, sha)
+    if state == "success":
+        return True, msg
+    if state in {"pending", "none"}:
+        merged = git("rev-parse", "--verify", "-q", f"{sha}^2")
+        if merged and git("rev-parse", f"{sha}^{{tree}}") == git("rev-parse", f"{merged}^{{tree}}"):
+            state2, msg2 = checks_for(repo, merged)
+            if state2 == "success":
+                return True, f"{msg2}——取自被合并的提交 {merged[:10]}（与本提交文件树完全相同）"
+    return False, msg
 
 
 def main() -> int:
