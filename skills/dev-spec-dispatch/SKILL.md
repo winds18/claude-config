@@ -38,7 +38,11 @@ JSON（与 `/dev-spec-implement` args 同构，`base` 可省略，由 `prepare` 
 }
 ```
 
-可选字段 `notes`（关键约束）；`effort` 取 low/medium/high/xhigh/max，核心逻辑包不填（继承会话）。顶层可选 `case_design`（Markdown 写 `用例设计: 否`）：关闭对抗用例阶段，仅限纯机械改动。其他未知顶层字段会报错，避免静默丢失。
+可选字段 `notes`（关键约束）；`effort` 取 low/medium/high/xhigh/max、`model`（Markdown 列名"模型"）取 sonnet/haiku/opus/fable/inherit 或完整模型 ID，核心逻辑包都不填（继承会话）。顶层可选 `case_design`（Markdown 写 `用例设计: 否`）：关闭对抗用例阶段，仅限纯机械改动。其他未知顶层字段会报错，避免静默丢失。
+
+## 环境
+
+`dispatch.py env`（`--json`）：列出本机的交付与隔离条件——是否显式设置了 git 身份、`gh` 是否可用、有无 node / docker、是否 SSH 会话、已在监听的端口。分配各包的端口前先看它；没有 `gh` 的机器（常见于服务器）止于提交与推送。
 
 ## 2. 校验
 

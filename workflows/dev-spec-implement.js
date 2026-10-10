@@ -10,7 +10,8 @@ export const meta = {
 //   packages: [{
 //     name, goal, owned: [glob], forbidden?: [glob], setup?: "<命令>",
 //     verify: ["<验收命令>"], resources?: "<端口/数据库/输出目录>", notes?: "<关键约束>",
-//     effort?: "low"|"medium"|"high"|"xhigh"|"max"
+//     effort?: "low"|"medium"|"high"|"xhigh"|"max",
+//     model?: "sonnet"|"haiku"|"opus"|"fable"|"inherit"|"claude-…"
 //   }],
 //   case_design?: true    // false 时跳过用例设计阶段
 // }
@@ -188,6 +189,7 @@ const results = await pipeline(
   async ({ p, cases, caseNote }) => {
     const opts = { agentType: 'implementer', isolation: 'worktree', schema: REPORT, label: `实现 ${p.name}`, phase: '实现' }
     if (p.effort) opts.effort = p.effort
+    if (p.model) opts.model = p.model          // 机械性的包可指定更便宜的模型；省略则继承会话模型
     try {
       return { p, cases, caseNote, rep: await agent(implementPrompt(p, args, cases), opts) }
     } catch (e) {

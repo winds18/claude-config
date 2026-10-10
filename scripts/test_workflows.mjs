@@ -145,6 +145,9 @@ async function testImplement() {
   const designed = mixed.calls.filter(c => c.opts.agentType === 'case-designer').map(c => c.opts.label)
   check('implement: effort low 的包跳过用例设计，其余照常', designed.length === 1 && designed[0] === '用例 api', designed.join(','))
   check('implement: 包级复核提示含相称性约束', mixed.calls.find(c => c.opts.agentType === 'reviewer').prompt.includes('不构成 fix-needed'))
+  const modelRun = await run(src, { base, packages: [{ ...pkgs[0], model: 'sonnet' }, pkgs[1]] }, withCases)
+  const implModels = modelRun.calls.filter(c => c.opts.agentType === 'implementer').map(c => c.opts.model)
+  check('implement: model 按包透传，未指定的不带该字段', implModels[0] === 'sonnet' && implModels[1] === undefined, JSON.stringify(implModels))
   const noCase = await run(src, { base, packages: pkgs.slice(0, 1), case_design: false }, withCases)
   check('implement: case_design=false 跳过用例阶段', !noCase.calls.some(c => c.opts.agentType === 'case-designer'))
 

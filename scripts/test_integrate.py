@@ -116,6 +116,16 @@ def main() -> int:
         g("remote", "remove", "origin")
         (cfg / "settings.json").write_text(json.dumps({"worktree": {"baseRef": "head"}}))
 
+        # identity must be configured explicitly: git's synthesised user@hostname leaks the machine name into history
+        name_cfg, mail_cfg = g("config", "user.name"), g("config", "user.email")
+        g("config", "--unset", "user.name"); g("config", "--unset", "user.email")
+        noid = {**os.environ, "HOME": str(cfg), "GIT_CONFIG_NOSYSTEM": "1"}
+        noid.pop("GIT_CONFIG_GLOBAL", None)
+        pr = subprocess.run([sys.executable, str(TOOL), "preflight", "--base", g("rev-parse", "HEAD"), "--json"],
+                            cwd=repo, capture_output=True, text=True, env=noid)
+        check("preflight: 未显式设置 git 身份时阻塞", pr.returncode == 2 and "git 身份" in pr.stdout, pr.stdout[-300:])
+        g("config", "user.name", name_cfg); g("config", "user.email", mail_cfg)
+
         wa = worktree("api", ["src/api/**"], {"src/api/x.py": "api = 1\n"})
         wb = worktree("web", ["src/web/**"], {"src/web/x.py": "web = 1\n"})
 

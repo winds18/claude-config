@@ -15,7 +15,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 1. **契约检查点**：共享类型/schema/接口已写好并在任务分支提交（本地检查点提交属于并行流程；推送仍需授权）。契约未变时，检查点就是派发时已提交的 HEAD。用户禁止提交时不并行，改串行。
 2. **运行 `integrate.py preflight --base <检查点>`**：确认主工作树干净、检查点在 HEAD 历史中、`worktree.baseRef` 实际解析为 `"head"`（安装器在用户设置写入；项目设置可覆盖）。有阻塞不派发。
 3. **环境**：worktree 需要的 gitignored 文件写进 `.worktreeinclude`；每个包写明依赖安装命令（`setup`）。
-4. **运行资源**：给每个写入者分配独立端口、数据库名、缓存与输出目录；无法隔离的步骤串行。
+4. **运行资源**：给每个写入者分配独立端口、数据库名、缓存与输出目录；无法隔离的步骤串行。先用 `/dev-spec-dispatch` 的 `env` 看本机已占用的端口（服务器上尤其要看）。
 5. **归属**：各包 `owned` 互不重叠；共享文件（锁文件、全局配置、迁移、公共类型）放进 `forbidden`，归主会话。
 
 ## 2. 派发
@@ -38,7 +38,7 @@ when_to_use: L 档任务准备并行实现或多视角复核，需要合并多�
 }
 ```
 
-- 机械性的包设 `effort: "low"/"medium"` 省成本；核心逻辑不设（继承会话）。
+- 机械性的包设 `effort: "low"/"medium"`、`model: "sonnet"` 省成本；核心逻辑不设（继承会话）。手动派发时对应 Agent 的 `model` 参数。
 - workflow 会先为每个包运行 `case-designer` 列出对抗用例，实现者先写成测试再实现，包级复核逐条核对。相称性：`effort: "low"` 的包自动跳过用例设计，`case_design: false` 全局关闭；验收命令尽量是可直接执行的入口（`./x.sh`、`make test`），避免被 worktree 隔离拒绝。
 - 结果中 `ready` 是 done 且包级复核通过的分支，`needs_attention` 需要你处理（blocked、partial、fix-needed）。
 

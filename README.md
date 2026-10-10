@@ -127,6 +127,8 @@ bash install.sh remote user@host
 
 退出码非 0 表示安装失败、状态检查有问题，或更新被拒绝。
 
+在服务器上开工前，`dispatch.py env` 会列出那台机器的条件（git 身份、`gh`、已占用端口）；派发前检查会拦住"未显式设置 git 身份"。
+
 ## 在项目中使用
 
 1. 新项目或首次并行前运行 `/project-bootstrap`：项目 CLAUDE.md（只含验证过的命令）、`.claude/settings.json`、`.worktreeinclude`、gitignore 条目。

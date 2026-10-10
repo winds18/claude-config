@@ -291,6 +291,10 @@ def cmd_preflight(args) -> dict:
     head = out("rev-parse", "--abbrev-ref", "HEAD")
     if head == "HEAD":
         blockers.append("当前处于 detached HEAD：先切到任务分支再提交检查点")
+    # explicit config only: git can synthesise user@hostname, which works but leaks the machine name into history
+    if not (out("config", "user.name") and out("config", "user.email")):
+        blockers.append("未显式设置 git 身份（user.name / user.email）：提交会失败，或带上自动生成的 用户名@主机名。"
+                        "先 git config user.name / user.email（服务器上常见）")
     base = args.base
     if git("cat-file", "-e", f"{base}^{{commit}}").returncode != 0:
         blockers.append(f"基线 {base} 不是本仓库中的提交")
