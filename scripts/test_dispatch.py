@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC_DISPATCH = ROOT / "skills/dev-spec-dispatch"
 SRC_INTEGRATE = ROOT / "skills/parallel-dev/scripts/integrate.py"
 results: list[tuple[str, bool, str]] = []
+unverified: list[str] = []          # sections skipped for a missing optional tool; printed, never silent
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -312,8 +313,11 @@ def main() -> int:
             check("契约: Python 与 workflow 的重叠判定逐例一致", not mism, str(mism))
             v = wf_validate({**two, "base": "b" * 64})
             check("回归: workflow 接受 SHA-256 基线", v.get("ok"), str(v))
+        elif os.environ.get("DEV_SPEC_REQUIRE_NODE") == "1":
+            check("契约测试需要 node（DEV_SPEC_REQUIRE_NODE=1 时不允许跳过）", False, "node 不可用")
         else:
-            check("契约测试需要 node（未安装时跳过会掩盖问题）", False, "node 不可用")
+            # a device without node (Debian server) still runs everything else; CI sets DEV_SPEC_REQUIRE_NODE=1
+            unverified.append("跨语言契约（prepare 输出与重叠判定交给 workflow 校验）：未安装 node，未验证")
 
         # 5. review-args：内容触发 security、路径按词匹配、文件名 stem 判 contract、未选 security 时提示
         b0 = g("rev-parse", "HEAD")
@@ -337,7 +341,9 @@ def main() -> int:
     passed = sum(ok for _, ok, _ in results)
     for name, ok, detail in results:
         print(f"  {'PASS' if ok else 'FAIL'} {name}" + ("" if ok else f"\n       {detail[:600]}"))
-    print(f"dispatch: {passed}/{len(results)} passed")
+    for note in unverified:
+        print(f"  SKIP {note}")
+    print(f"dispatch: {passed}/{len(results)} passed" + (f"，{len(unverified)} 段未验证" if unverified else ""))
     return 0 if passed == len(results) else 1
 
 
